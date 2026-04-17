@@ -1,0 +1,41 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.11.5
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    restart: unless-stopped
+
+  memory-service:
+    build: .
+    command: ["hermes-vault-memory", "serve", "--host", "0.0.0.0", "--port", "8787"]
+    depends_on:
+      - qdrant
+    environment:
+      HVM_VAULT_ROOTS: /vault/agent-main:/vault/psalmbox-main:/vault/katana-main
+      HVM_DATA_DIR: /data
+      HVM_QDRANT_URL: http://qdrant:6333
+      HVM_QDRANT_PATH: /data/qdrant
+      HVM_MANIFEST_PATH: /data/manifest.json
+      HVM_COLLECTION_NAME: hermes_vault_memory
+      HVM_EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
+      HVM_CHUNK_SIZE: 1600
+      HVM_CHUNK_OVERLAP: 200
+    ports:
+      - "8787:8787"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health').read()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - /workspace/vaults/agent-main:/vault/agent-main:ro
+      - /workspace/vaults/psalmbox-main:/vault/psalmbox-main:ro
+      - /workspace/vaults/katana-main:/vault/katana-main:ro
+      - hermes-vault-memory-data:/data
+    restart: unless-stopped
+
+volumes:
+  qdrant-storage:
+  hermes-vault-memory-data:

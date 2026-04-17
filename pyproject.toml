@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-vault-memory"
+version = "0.1.0"
+description = "Local memory service for the Hermes vaults"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "fastmcp>=2.0",
+  "qdrant-client>=1.11",
+  "fastembed>=0.4",
+]
+
+[project.scripts]
+hermes-vault-memory = "hermes_vault_memory.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

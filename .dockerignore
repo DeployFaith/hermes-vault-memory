@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.venv
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.cache
+.DS_Store
+qdrant_data
+memory_service_data
+hf_cache
+*.log
+*.sqlite
+*.db
