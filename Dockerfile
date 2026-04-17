@@ -13,6 +13,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 
+ARG CACHEBUST=1
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir .
 
 EXPOSE 8787
