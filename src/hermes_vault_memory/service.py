@@ -208,8 +208,11 @@ class VaultMemoryService:
         return models.PointStruct(id=chunk.chunk_id, vector=self._encode([chunk.text])[0], payload=payload)
 
     def _upsert_document(self, document: ParsedDocument) -> None:
-        points = [self._point_from_chunk(document, chunk) for chunk in document.chunks]
-        self.client.upsert(collection_name=self.settings.collection_name, points=points)
+        batch_size = 128
+        for i in range(0, len(document.chunks), batch_size):
+            batch = document.chunks[i : i + batch_size]
+            points = [self._point_from_chunk(document, chunk) for chunk in batch]
+            self.client.upsert(collection_name=self.settings.collection_name, points=points)
 
     def _delete_chunk_ids(self, chunk_ids: Sequence[str]) -> int:
         if not chunk_ids:
