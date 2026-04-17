@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 import re
+import uuid
 from typing import Iterable
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
@@ -302,7 +303,7 @@ def parse_markdown_file(path: Path, vault: str, root: Path, *, chunk_size: int, 
             ordinal = seen.get(occurrence_key, 0)
             seen[occurrence_key] = ordinal + 1
             stable_key = f"{vault}:{relative_path}:{' > '.join(heading_path)}:{content_hash}:{ordinal}"
-            chunk_id = sha256(stable_key.encode("utf-8")).hexdigest()
+            chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, stable_key))
             chunks.append(
                 Chunk(
                     chunk_index=len(chunks),
@@ -319,7 +320,7 @@ def parse_markdown_file(path: Path, vault: str, root: Path, *, chunk_size: int, 
     if not chunks:
         prefix = f"Vault: {vault}\nPath: {relative_path}\n\n"
         content_hash = sha256(prefix.encode("utf-8")).hexdigest()
-        chunk_id = sha256(f"{vault}:{relative_path}:{content_hash}:0".encode("utf-8")).hexdigest()
+        chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{vault}:{relative_path}:{content_hash}:0"))
         chunks.append(
             Chunk(
                 chunk_index=0,
