@@ -10,11 +10,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
-COPY src ./src
-
-ARG CACHEBUST=2
-RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir .
+COPY . /app/src-build/
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir /app/src-build/ && \
+    rm -rf /app/src-build/
 
 EXPOSE 8787
 CMD ["hermes-vault-memory", "serve", "--host", "0.0.0.0", "--port", "8787"]
