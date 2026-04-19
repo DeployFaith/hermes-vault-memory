@@ -103,7 +103,7 @@ class QdrantClient:
         return SimpleNamespace(count=len(self._collections[collection_name]["points"]))
 
     def retrieve(self, collection_name: str, ids: list[str], with_payload: bool = True, with_vectors: bool = False) -> list[SimpleNamespace]:
-        stored = self._collections[collection_name]["points"]
+        stored = self._collections[collection_name]['points']
         results: list[SimpleNamespace] = []
         for point_id in ids:
             point = stored.get(point_id)
@@ -112,8 +112,8 @@ class QdrantClient:
             results.append(SimpleNamespace(id=point.id, payload=point.payload, score=1.0))
         return results
 
-    def search(self, collection_name: str, query_vector: list[float], limit: int, query_filter: Filter | None = None, with_payload: bool = True, with_vectors: bool = False) -> list[SimpleNamespace]:
-        points = list(self._collections[collection_name]["points"].values())
+    def query_points(self, collection_name: str, query: list[float], limit: int, query_filter: Filter | None = None, with_payload: bool = True, with_vectors: bool = False, **_: Any) -> SimpleNamespace:
+        points = list(self._collections[collection_name]['points'].values())
         filtered: list[StoredPoint] = []
         for point in points:
             if query_filter and not self._matches_filter(point, query_filter):
@@ -121,11 +121,14 @@ class QdrantClient:
             filtered.append(point)
 
         ranked = [
-            StoredPoint(id=point.id, vector=point.vector, payload=point.payload, score=self._cosine_similarity(query_vector, point.vector))
+            StoredPoint(id=point.id, vector=point.vector, payload=point.payload, score=self._cosine_similarity(query, point.vector))
             for point in filtered
         ]
         ranked.sort(key=lambda item: (-item.score, item.id))
-        return [SimpleNamespace(id=item.id, payload=item.payload, score=item.score) for item in ranked[:limit]]
+        return SimpleNamespace(points=[SimpleNamespace(id=item.id, payload=item.payload, score=item.score) for item in ranked[:limit]])
+
+    def search(self, collection_name: str, query_vector: list[float], limit: int, query_filter: Filter | None = None, with_payload: bool = True, with_vectors: bool = False) -> list[SimpleNamespace]:
+        return list(self.query_points(collection_name, query_vector, limit, query_filter, with_payload, with_vectors).points)
 
     @staticmethod
     def _matches_filter(point: StoredPoint, qfilter: Filter) -> bool:
@@ -143,8 +146,6 @@ class QdrantClient:
         if not left_norm or not right_norm:
             return 0.0
         return numerator / (left_norm * right_norm)
-
-
 class TextEmbedding:
     def __init__(self, model_name: str):
         self.model_name = model_name
