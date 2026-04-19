@@ -256,40 +256,42 @@ class VaultMemoryService:
 
     def sync(self, paths: Sequence[str | Path] | None = None) -> dict[str, Any]:
         start = datetime.now(timezone.utc)
-        with self._lock:
-            self._ensure_collection()
-            summary = IndexSummary()
-            discovered = self._discover_files(paths)
-            summary.scanned_files = len(discovered)
-            current_keys: set[str] = set()
-            files_manifest = self._manifest.setdefault("files", {})
+        self._ensure_collection()
+        summary = IndexSummary()
+        discovered = self._discover_files(paths)
+        summary.scanned_files = len(discovered)
+        current_keys: set[str] = set()
 
-            for target, path in discovered:
-                if not path.exists():
-                    continue
-                rel_path = path.resolve().relative_to(target.root.resolve()).as_posix()
-                key = self._document_key(target.vault, rel_path)
-                current_keys.add(key)
-                stat = path.stat()
+        for target, path in discovered:
+            if not path.exists():
+                continue
+            rel_path = path.resolve().relative_to(target.root.resolve()).as_posix()
+            key = self._document_key(target.vault, rel_path)
+            current_keys.add(key)
+            stat = path.stat()
+            with self._lock:
+                files_manifest = self._manifest.setdefault("files", {})
                 previous = files_manifest.get(key)
-                if previous and previous.get("size") == stat.st_size and float(previous.get("mtime", -1)) == stat.st_mtime:
-                    summary.skipped_files += 1
-                    continue
+            if previous and previous.get("size") == stat.st_size and float(previous.get("mtime", -1)) == stat.st_mtime:
+                summary.skipped_files += 1
+                continue
 
-                document = parse_markdown_file(
-                    path=path,
-                    vault=target.vault,
-                    root=target.root,
-                    chunk_size=self.settings.chunk_size,
-                    chunk_overlap=self.settings.chunk_overlap,
-                )
-                if previous:
-                    summary.deleted_chunks += self._delete_chunk_ids(previous.get("chunk_ids", []))
-                self._upsert_document(document)
-                summary.changed_files += 1
-                summary.indexed_files += 1
-                summary.indexed_chunks += len(document.chunks)
-                summary.upserted_chunks += len(document.chunks)
+            document = parse_markdown_file(
+                path=path,
+                vault=target.vault,
+                root=target.root,
+                chunk_size=self.settings.chunk_size,
+                chunk_overlap=self.settings.chunk_overlap,
+            )
+            if previous:
+                summary.deleted_chunks += self._delete_chunk_ids(previous.get("chunk_ids", []))
+            self._upsert_document(document)
+            summary.changed_files += 1
+            summary.indexed_files += 1
+            summary.indexed_chunks += len(document.chunks)
+            summary.upserted_chunks += len(document.chunks)
+            with self._lock:
+                files_manifest = self._manifest.setdefault("files", {})
                 files_manifest[key] = {
                     "vault": document.vault,
                     "root": str(document.root),
@@ -303,17 +305,22 @@ class VaultMemoryService:
                     "updated_at": self._now(),
                 }
 
-            removed_keys: list[str] = []
-            if paths is None:
+        removed_keys: list[str] = []
+        if paths is None:
+            with self._lock:
+                files_manifest = self._manifest.setdefault("files", {})
                 removed_keys = [key for key in list(files_manifest.keys()) if key not in current_keys]
             for key in removed_keys:
-                entry = files_manifest.pop(key, None)
+                with self._lock:
+                    files_manifest = self._manifest.setdefault("files", {})
+                    entry = files_manifest.pop(key, None)
                 if not entry:
                     continue
                 summary.deleted_files += 1
                 summary.deleted_chunks += self._delete_chunk_ids(entry.get("chunk_ids", []))
                 summary.removed_orphans += 1
 
+        with self._lock:
             self._manifest.update(
                 {
                     "version": MANIFEST_VERSION,
@@ -326,8 +333,8 @@ class VaultMemoryService:
                 }
             )
             self._save_manifest()
-            summary.duration_seconds = (datetime.now(timezone.utc) - start).total_seconds()
-            return summary.to_dict()
+        summary.duration_seconds = (datetime.now(timezone.utc) - start).total_seconds()
+        return summary.to_dict()
 
     def rebuild(self) -> dict[str, Any]:
         with self._lock:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -135,6 +136,60 @@ class IndexSearchTests(unittest.TestCase):
             self.assertTrue(status['ok'])
             self.assertEqual(status['files_indexed'], 2)
             self.assertEqual(status['vault_counts']['vault']['files'], 2)
+
+    def test_read_only_calls_return_while_background_sync_is_busy(self) -> None:
+        service_module = load_service_module()
+        fixture_vault = Path(__file__).resolve().parents[1] / "fixtures" / "sample-vault"
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / "vault"
+            data_dir = root / "data"
+            shutil.copytree(fixture_vault, vault)
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "HVM_VAULT_ROOTS": str(vault),
+                    "HVM_DATA_DIR": str(data_dir),
+                    "HVM_QDRANT_PATH": str(data_dir / "qdrant"),
+                    "HVM_MANIFEST_PATH": str(data_dir / "manifest.json"),
+                    "HVM_COLLECTION_NAME": "demo_collection",
+                },
+                clear=True,
+            ):
+                settings = Settings.load()
+                service = service_module.VaultMemoryService(settings)
+
+            sync_started = threading.Event()
+            release_sync = threading.Event()
+            original_upsert = service._upsert_document
+
+            def blocking_upsert(document):
+                sync_started.set()
+                release_sync.wait(timeout=5)
+                return original_upsert(document)
+
+            with patch.object(service, "_upsert_document", side_effect=blocking_upsert):
+                self.assertTrue(service.start_background_sync())
+                self.assertTrue(sync_started.wait(5))
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    search_future = executor.submit(service.search, "vault mount", 5)
+                    search_result = search_future.result(timeout=5)
+                self.assertEqual(search_result["query"], "vault mount")
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    status_future = executor.submit(service.status)
+                    status_result = status_future.result(timeout=5)
+                self.assertEqual(status_result["sync_state"], "running")
+                self.assertTrue(status_result["ok"])
+
+            release_sync.set()
+            if service._sync_thread:
+                service._sync_thread.join(timeout=10)
+            self.assertEqual(service._sync_state, "complete")
+            self.assertIsNone(service._sync_error)
 
     def test_search_uses_query_points_api(self) -> None:
         service_module = load_service_module()
