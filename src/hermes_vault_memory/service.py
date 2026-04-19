@@ -537,11 +537,20 @@ def build_fastapi_app(service: VaultMemoryService | None = None) -> FastAPI:
 
     @app.get("/health")
     def health() -> JSONResponse:
-        data = service.status()
-        ready = bool(data.get("ok")) and data.get("sync_state") != "failed"
+        collection_exists = service.client.collection_exists(service.settings.collection_name)
+        ready = bool(collection_exists) and service._sync_state != "failed"
         return JSONResponse(
             status_code=200 if ready else 503,
-            content={"status": "ok" if ready else "not-ready", "ready": ready, "service": data},
+            content={
+                "status": "ok" if ready else "not-ready",
+                "ready": ready,
+                "service": {
+                    "ok": collection_exists,
+                    "collection_name": service.settings.collection_name,
+                    "sync_state": service._sync_state,
+                    "sync_error": service._sync_error,
+                },
+            },
         )
 
     @app.get("/")
