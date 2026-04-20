@@ -6,9 +6,9 @@ import os
 from typing import Sequence
 
 DEFAULT_VAULT_ROOTS = (
-    Path("/vault/agent-main"),
-    Path("/vault/psalmbox-main"),
-    Path("/vault/katana-main"),
+    Path("/vault/root-1"),
+    Path("/vault/root-2"),
+    Path("/vault/root-3"),
 )
 
 

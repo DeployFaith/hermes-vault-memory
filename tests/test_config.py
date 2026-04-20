@@ -51,11 +51,11 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(settings.chunk_size, 900)
             self.assertEqual(settings.chunk_overlap, 123)
 
-    def test_defaults_point_at_dokploy_mount_paths(self) -> None:
+    def test_defaults_point_at_generic_mount_paths(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
             settings = Settings.load()
 
-        self.assertEqual(settings.vault_roots, (Path("/vault/agent-main"), Path("/vault/psalmbox-main"), Path("/vault/katana-main")))
+        self.assertEqual(settings.vault_roots, (Path("/vault/root-1"), Path("/vault/root-2"), Path("/vault/root-3")))
         self.assertTrue(str(settings.data_dir).endswith("data"))
         self.assertTrue(str(settings.qdrant_path).endswith("data/qdrant"))
         self.assertEqual(settings.qdrant_url, "http://qdrant:6333")

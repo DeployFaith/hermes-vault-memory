@@ -1,11 +1,8 @@
 # hermes-vault-memory
 
-Local semantic memory for Hermes across all three vaults:
-- `/workspace/vaults/agent-main`
-- `/workspace/vaults/psalmbox-main`
-- `/workspace/vaults/katana-main`
+Local semantic memory for Hermes across three mounted note roots.
 
-This repo is meant to be deployed from Docker Compose or Dokploy on the host that can see those vault paths. It is not a cloud sync toy. The vaults must be mounted into the container.
+This repo is meant to be deployed from Docker Compose or Dokploy on a host that can see the configured mounts. It is not a cloud sync toy. The roots must be mounted into the container.
 
 ## What it does
 
@@ -27,13 +24,13 @@ This repo is meant to be deployed from Docker Compose or Dokploy on the host tha
 
 ## Compose layout
 
-The default `docker-compose.yml` expects these host mounts:
+The default `docker-compose.yml` expects three host mounts provided via environment variables:
 
-- `/workspace/vaults/agent-main` → `/vault/agent-main`
-- `/workspace/vaults/psalmbox-main` → `/vault/psalmbox-main`
-- `/workspace/vaults/katana-main` → `/vault/katana-main`
+- `HVM_HOST_VAULT_1` → `/vault/root-1`
+- `HVM_HOST_VAULT_2` → `/vault/root-2`
+- `HVM_HOST_VAULT_3` → `/vault/root-3`
 
-If you deploy somewhere else, change the bind mounts. If the container cannot see the vaults, startup should fail instead of pretending everything is fine.
+If you deploy somewhere else, set those mount variables to match your machine. If the container cannot see the configured roots, startup should fail instead of pretending everything is fine.
 
 ## Run locally
 
@@ -60,7 +57,7 @@ The server exposes both the long and short tool names:
 ## Dokploy notes
 
 Use the repo root as the build context. Set the deployment port to `8787`.
-The important part is the vault bind mounts and a persistent `/data` volume.
+The important part is the bind mounts and a persistent `/data` volume.
 
 If Dokploy runs on a different machine than the vaults, this repo will not magically fix that. You would need a sync/mirror layer first.
 
