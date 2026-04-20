@@ -35,6 +35,8 @@ class Settings:
     embedding_model: str
     chunk_size: int
     chunk_overlap: int
+    sync_poll_seconds: int
+    sync_full_resync_seconds: int
 
     @classmethod
     def load(cls) -> "Settings":
@@ -48,6 +50,8 @@ class Settings:
         qdrant_path = Path(os.environ.get("HVM_QDRANT_PATH", data_dir / "qdrant")).expanduser().resolve()
         qdrant_url = os.environ.get("HVM_QDRANT_URL", "http://qdrant:6333").strip() or None
         manifest_path = Path(os.environ.get("HVM_MANIFEST_PATH", data_dir / "manifest.json")).expanduser().resolve()
+        sync_poll_seconds = int(os.environ.get("HVM_SYNC_POLL_SECONDS", "60"))
+        sync_full_resync_seconds = int(os.environ.get("HVM_SYNC_FULL_RESYNC_SECONDS", "21600"))
         return cls(
             repo_root=repo_root,
             vault_roots=vault_roots,
@@ -59,6 +63,8 @@ class Settings:
             embedding_model=embedding_model,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            sync_poll_seconds=sync_poll_seconds,
+            sync_full_resync_seconds=sync_full_resync_seconds,
         )
 
     def ensure_dirs(self) -> None:

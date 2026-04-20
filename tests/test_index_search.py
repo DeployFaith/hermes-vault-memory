@@ -98,6 +98,117 @@ class IndexSearchTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 service_module.VaultMemoryService(settings)
 
+    def test_plan_sync_detects_modified_files(self) -> None:
+        service_module = load_service_module()
+        fixture_vault = Path(__file__).resolve().parents[1] / 'fixtures' / 'sample-vault'
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            shutil.copytree(fixture_vault, vault)
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                },
+                clear=True,
+            ):
+                settings = Settings.load()
+                service = service_module.VaultMemoryService(settings)
+
+            service.sync()
+            note = vault / 'dokploy-setup.md'
+            note.write_text(note.read_text() + '\nAdded sync probe line.\n')
+
+            plan = service.plan_sync()
+            self.assertIn(str(note), plan['changed_paths'])
+            self.assertFalse(plan['needs_full_resync'])
+
+    def test_plan_sync_requests_full_rescan_for_deleted_files(self) -> None:
+        service_module = load_service_module()
+        fixture_vault = Path(__file__).resolve().parents[1] / 'fixtures' / 'sample-vault'
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            shutil.copytree(fixture_vault, vault)
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                },
+                clear=True,
+            ):
+                settings = Settings.load()
+                service = service_module.VaultMemoryService(settings)
+
+            service.sync()
+            note = vault / 'dokploy-setup.md'
+            note.unlink()
+
+            plan = service.plan_sync()
+            self.assertTrue(plan['needs_full_resync'])
+
+    def test_sync_monitor_tick_dispatches_incremental_and_full_sync(self) -> None:
+        service_module = load_service_module()
+        fixture_vault = Path(__file__).resolve().parents[1] / 'fixtures' / 'sample-vault'
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            shutil.copytree(fixture_vault, vault)
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                },
+                clear=True,
+            ):
+                settings = Settings.load()
+                service = service_module.VaultMemoryService(settings)
+
+            service.sync()
+            note = vault / 'dokploy-setup.md'
+            note.write_text(note.read_text() + '\nAdded sync probe line.\n')
+
+            calls: list[list[str] | None] = []
+
+            def fake_start_background_sync(paths=None):
+                calls.append(paths)
+                return True
+
+            with patch.object(service, 'start_background_sync', side_effect=fake_start_background_sync):
+                dispatched = service._sync_monitor_tick()
+
+            self.assertTrue(dispatched)
+            self.assertEqual(calls, [[str(note)]])
+
+            note.unlink()
+            calls.clear()
+            with patch.object(service, 'start_background_sync', side_effect=fake_start_background_sync):
+                dispatched = service._sync_monitor_tick()
+
+            self.assertTrue(dispatched)
+            self.assertEqual(calls, [None])
+
     def test_sync_and_search_flow_on_sample_markdown(self) -> None:
         service_module = load_service_module()
         fixture_vault = Path(__file__).resolve().parents[1] / 'fixtures' / 'sample-vault'
@@ -139,22 +250,22 @@ class IndexSearchTests(unittest.TestCase):
 
     def test_read_only_calls_return_while_background_sync_is_busy(self) -> None:
         service_module = load_service_module()
-        fixture_vault = Path(__file__).resolve().parents[1] / "fixtures" / "sample-vault"
+        fixture_vault = Path(__file__).resolve().parents[1] / 'fixtures' / 'sample-vault'
 
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            vault = root / "vault"
-            data_dir = root / "data"
+            vault = root / 'vault'
+            data_dir = root / 'data'
             shutil.copytree(fixture_vault, vault)
 
             with patch.dict(
-                "os.environ",
+                'os.environ',
                 {
-                    "HVM_VAULT_ROOTS": str(vault),
-                    "HVM_DATA_DIR": str(data_dir),
-                    "HVM_QDRANT_PATH": str(data_dir / "qdrant"),
-                    "HVM_MANIFEST_PATH": str(data_dir / "manifest.json"),
-                    "HVM_COLLECTION_NAME": "demo_collection",
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
                 },
                 clear=True,
             ):
@@ -188,7 +299,7 @@ class IndexSearchTests(unittest.TestCase):
             release_sync.set()
             if service._sync_thread:
                 service._sync_thread.join(timeout=10)
-            self.assertEqual(service._sync_state, "complete")
+            self.assertEqual(service._sync_state, 'complete')
             self.assertIsNone(service._sync_error)
 
     def test_search_uses_query_points_api(self) -> None:

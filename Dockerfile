@@ -6,7 +6,9 @@ ENV PYTHONUNBUFFERED=1 \
     HVM_DATA_DIR=/data \
     HVM_QDRANT_URL=http://qdrant:6333 \
     HVM_QDRANT_PATH=/data/qdrant \
-    HVM_MANIFEST_PATH=/data/manifest.json
+    HVM_MANIFEST_PATH=/data/manifest.json \
+    HVM_SYNC_POLL_SECONDS=60 \
+    HVM_SYNC_FULL_RESYNC_SECONDS=21600
 
 WORKDIR /app
 

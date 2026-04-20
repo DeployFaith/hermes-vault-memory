@@ -70,6 +70,10 @@ class VaultMemoryService:
         self._sync_state = "idle"
         self._sync_error: str | None = None
         self._last_sync_summary: dict[str, Any] | None = None
+        self._last_full_sync_at: float | None = None
+        self._last_full_sync_completed_at: str | None = None
+        self._sync_monitor_thread: threading.Thread | None = None
+        self._sync_monitor_stop = threading.Event()
         self._vault_targets = tuple(
             target for target in vault_targets(self.settings) if target.root.exists() and target.root.is_dir()
         )
@@ -145,6 +149,97 @@ class VaultMemoryService:
                     f"Qdrant collection {self.settings.collection_name!r} already exists with vector size {current}, "
                     f"but this service expects {self.vector_size}."
                 )
+
+
+    def _file_metadata_snapshot(self) -> dict[str, dict[str, Any]]:
+        snapshot: dict[str, dict[str, Any]] = {}
+        for target in self._vault_targets:
+            root = target.root.resolve()
+            for path in root.rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in {".md", ".markdown", ".mdown"}:
+                    continue
+                stat = path.stat()
+                rel_path = path.resolve().relative_to(root).as_posix()
+                key = self._document_key(target.vault, rel_path)
+                snapshot[key] = {
+                    "path": str(path),
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                }
+        return snapshot
+
+    def plan_sync(self) -> dict[str, Any]:
+        with self._lock:
+            if self._sync_thread and self._sync_thread.is_alive():
+                return {
+                    "changed_paths": [],
+                    "needs_full_resync": False,
+                    "full_resync_due": False,
+                    "sync_running": True,
+                    "last_full_sync_at": self._last_full_sync_completed_at,
+                }
+            manifest_files = dict(self._manifest.get("files", {}))
+            last_full_sync_at = self._last_full_sync_at
+            last_full_sync_completed_at = self._last_full_sync_completed_at
+
+        current_files = self._file_metadata_snapshot()
+        changed_paths: list[str] = []
+        needs_full_resync = False
+        for key, current in current_files.items():
+            previous = manifest_files.get(key)
+            if not previous:
+                changed_paths.append(current["path"])
+                continue
+            if previous.get("size") != current["size"] or float(previous.get("mtime", -1)) != float(current["mtime"]):
+                changed_paths.append(current["path"])
+
+        for key in manifest_files:
+            if key not in current_files:
+                needs_full_resync = True
+                break
+
+        full_resync_due = False
+        if last_full_sync_at is None:
+            full_resync_due = True
+        else:
+            full_resync_due = (time.monotonic() - last_full_sync_at) >= self.settings.sync_full_resync_seconds
+
+        return {
+            "changed_paths": changed_paths,
+            "needs_full_resync": needs_full_resync,
+            "full_resync_due": full_resync_due,
+            "sync_running": False,
+            "last_full_sync_at": last_full_sync_completed_at,
+        }
+
+    def _sync_monitor_tick(self) -> bool:
+        plan = self.plan_sync()
+        if plan["sync_running"]:
+            return False
+        if plan["needs_full_resync"] or plan["full_resync_due"]:
+            return self.start_background_sync()
+        if plan["changed_paths"]:
+            return self.start_background_sync(paths=plan["changed_paths"])
+        return False
+
+    def _sync_monitor_worker(self) -> None:
+        poll_seconds = max(1, int(self.settings.sync_poll_seconds))
+        while not self._sync_monitor_stop.wait(poll_seconds):
+            try:
+                self._sync_monitor_tick()
+            except Exception as exc:  # pragma: no cover - background guardrail only
+                with self._lock:
+                    self._sync_error = str(exc)
+
+    def start_sync_monitor(self) -> bool:
+        with self._lock:
+            if self._sync_monitor_thread and self._sync_monitor_thread.is_alive():
+                return False
+            self._sync_monitor_stop.clear()
+            worker = threading.Thread(target=self._sync_monitor_worker, daemon=True)
+            self._sync_monitor_thread = worker
+            worker.start()
+            return True
 
 
     def _sync_worker(self, paths: Sequence[str | Path] | None = None) -> None:
@@ -333,6 +428,9 @@ class VaultMemoryService:
                 }
             )
             self._save_manifest()
+            if paths is None:
+                self._last_full_sync_at = time.monotonic()
+                self._last_full_sync_completed_at = self._now()
         summary.duration_seconds = (datetime.now(timezone.utc) - start).total_seconds()
         return summary.to_dict()
 
@@ -470,6 +568,10 @@ class VaultMemoryService:
                 "sync_state": self._sync_state,
                 "sync_error": self._sync_error,
                 "sync_thread_alive": bool(self._sync_thread and self._sync_thread.is_alive()),
+                "sync_monitor_alive": bool(self._sync_monitor_thread and self._sync_monitor_thread.is_alive()),
+                "last_full_sync_at": self._last_full_sync_completed_at,
+                "sync_poll_seconds": self.settings.sync_poll_seconds,
+                "sync_full_resync_seconds": self.settings.sync_full_resync_seconds,
                 "last_sync_summary": self._last_sync_summary,
             }
 
@@ -541,6 +643,7 @@ def build_fastapi_app(service: VaultMemoryService | None = None) -> FastAPI:
     app = FastAPI(lifespan=mcp_app.lifespan)
     app.mount("/mcp", mcp_app)
     service.start_background_sync()
+    service.start_sync_monitor()
 
     @app.get("/health")
     def health() -> JSONResponse:
