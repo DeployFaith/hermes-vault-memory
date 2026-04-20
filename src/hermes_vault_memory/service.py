@@ -659,6 +659,10 @@ def build_fastapi_app(service: VaultMemoryService | None = None) -> FastAPI:
                     "collection_name": service.settings.collection_name,
                     "sync_state": service._sync_state,
                     "sync_error": service._sync_error,
+                    "sync_monitor_alive": bool(service._sync_monitor_thread and service._sync_monitor_thread.is_alive()),
+                    "last_full_sync_at": service._last_full_sync_completed_at,
+                    "sync_poll_seconds": service.settings.sync_poll_seconds,
+                    "sync_full_resync_seconds": service.settings.sync_full_resync_seconds,
                 },
             },
         )
