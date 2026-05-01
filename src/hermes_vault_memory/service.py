@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
@@ -19,6 +20,7 @@ from .config import ScanTarget, Settings, vault_targets
 
 
 MANIFEST_VERSION = 1
+AUTH_EXEMPT_PATHS = {"/health", "/live", "/ready"}
 
 
 @dataclass(slots=True)
@@ -66,6 +68,8 @@ class VaultMemoryService:
         self.embedder = TextEmbedding(model_name=self.settings.embedding_model)
         self.vector_size = self._probe_vector_size()
         self._lock = threading.RLock()
+        self._operation_lock = threading.Lock()
+        self._operation_owner: int | None = None
         self._sync_thread: threading.Thread | None = None
         self._sync_state = "idle"
         self._sync_error: str | None = None
@@ -92,6 +96,22 @@ class VaultMemoryService:
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _acquire_operation(self, operation: str) -> bool:
+        current_thread = threading.get_ident()
+        with self._lock:
+            if self._operation_owner == current_thread:
+                return False
+        if not self._operation_lock.acquire(blocking=False):
+            raise RuntimeError(f"{operation} already running")
+        with self._lock:
+            self._operation_owner = current_thread
+        return True
+
+    def _release_operation(self) -> None:
+        with self._lock:
+            self._operation_owner = None
+        self._operation_lock.release()
 
     def _probe_vector_size(self) -> int:
         sample = next(iter(self.embedder.embed(["vector size probe"])))
@@ -170,7 +190,7 @@ class VaultMemoryService:
 
     def plan_sync(self) -> dict[str, Any]:
         with self._lock:
-            if self._sync_thread and self._sync_thread.is_alive():
+            if self._operation_lock.locked() or (self._sync_thread and self._sync_thread.is_alive()):
                 return {
                     "changed_paths": [],
                     "needs_full_resync": False,
@@ -241,26 +261,49 @@ class VaultMemoryService:
             worker.start()
             return True
 
+    def stop_sync_monitor(self, timeout: float = 5.0) -> bool:
+        with self._lock:
+            worker = self._sync_monitor_thread
+            if not worker or not worker.is_alive():
+                self._sync_monitor_thread = None
+                return False
+            self._sync_monitor_stop.set()
+        if worker is not threading.current_thread():
+            worker.join(timeout=timeout)
+        stopped = not worker.is_alive()
+        if stopped:
+            with self._lock:
+                if self._sync_monitor_thread is worker:
+                    self._sync_monitor_thread = None
+        return stopped
 
     def _sync_worker(self, paths: Sequence[str | Path] | None = None) -> None:
         try:
+            with self._lock:
+                self._operation_owner = threading.get_ident()
             summary = self.sync(paths=paths)
         except Exception as exc:
             with self._lock:
                 self._sync_state = "failed"
                 self._sync_error = str(exc)
                 self._sync_thread = None
-            return
-        with self._lock:
-            self._sync_state = "complete"
-            self._sync_error = None
-            self._last_sync_summary = summary
-            self._sync_thread = None
+        else:
+            with self._lock:
+                self._sync_state = "complete"
+                self._sync_error = None
+                self._last_sync_summary = summary
+                self._sync_thread = None
+        finally:
+            self._release_operation()
 
     def start_background_sync(self, paths: Sequence[str | Path] | None = None) -> bool:
+        if not self._operation_lock.acquire(blocking=False):
+            return False
         with self._lock:
             if self._sync_thread and self._sync_thread.is_alive():
+                self._operation_lock.release()
                 return False
+            self._operation_owner = None
             self._sync_state = "running"
             self._sync_error = None
             worker = threading.Thread(target=self._sync_worker, kwargs={"paths": paths}, daemon=True)
@@ -312,7 +355,7 @@ class VaultMemoryService:
         embeddings = self.embedder.embed(list(texts))
         return [list(map(float, embedding)) for embedding in embeddings]
 
-    def _point_from_chunk(self, document: ParsedDocument, chunk) -> models.PointStruct:
+    def _point_from_chunk(self, document: ParsedDocument, chunk, vector: Sequence[float] | None = None) -> models.PointStruct:
         payload = {
             "document_key": self._document_key(document.vault, document.relative_path),
             "vault": document.vault,
@@ -331,13 +374,21 @@ class VaultMemoryService:
             "source_mtime": document.mtime,
             "source_size": document.size,
         }
-        return models.PointStruct(id=chunk.chunk_id, vector=self._encode([chunk.text])[0], payload=payload)
+        if vector is None:
+            vector = self._encode([chunk.text])[0]
+        return models.PointStruct(id=chunk.chunk_id, vector=list(vector), payload=payload)
 
     def _upsert_document(self, document: ParsedDocument) -> None:
         batch_size = 128
         for i in range(0, len(document.chunks), batch_size):
             batch = document.chunks[i : i + batch_size]
-            points = [self._point_from_chunk(document, chunk) for chunk in batch]
+            vectors = self._encode(chunk.text for chunk in batch)
+            if len(vectors) != len(batch):
+                raise RuntimeError(f"Expected {len(batch)} embeddings, got {len(vectors)}")
+            points = [
+                self._point_from_chunk(document, chunk, vector)
+                for chunk, vector in zip(batch, vectors)
+            ]
             self.client.upsert(collection_name=self.settings.collection_name, points=points)
 
     def _delete_chunk_ids(self, chunk_ids: Sequence[str]) -> int:
@@ -350,6 +401,14 @@ class VaultMemoryService:
         return len(chunk_ids)
 
     def sync(self, paths: Sequence[str | Path] | None = None) -> dict[str, Any]:
+        acquired = self._acquire_operation("sync")
+        try:
+            return self._sync_unlocked(paths=paths)
+        finally:
+            if acquired:
+                self._release_operation()
+
+    def _sync_unlocked(self, paths: Sequence[str | Path] | None = None) -> dict[str, Any]:
         start = datetime.now(timezone.utc)
         self._ensure_collection()
         summary = IndexSummary()
@@ -435,24 +494,29 @@ class VaultMemoryService:
         return summary.to_dict()
 
     def rebuild(self) -> dict[str, Any]:
-        with self._lock:
-            if self.client.collection_exists(self.settings.collection_name):
-                self.client.delete_collection(self.settings.collection_name)
-            self.client.create_collection(
-                collection_name=self.settings.collection_name,
-                vectors_config=models.VectorParams(size=self.vector_size, distance=models.Distance.COSINE),
-            )
-            self._manifest = {
-                "version": MANIFEST_VERSION,
-                "collection_name": self.settings.collection_name,
-                "embedding_model": self.settings.embedding_model,
-                "chunk_size": self.settings.chunk_size,
-                "chunk_overlap": self.settings.chunk_overlap,
-                "last_sync": None,
-                "files": {},
-            }
-            self._save_manifest()
-        return self.sync()
+        acquired = self._acquire_operation("sync")
+        try:
+            with self._lock:
+                if self.client.collection_exists(self.settings.collection_name):
+                    self.client.delete_collection(self.settings.collection_name)
+                self.client.create_collection(
+                    collection_name=self.settings.collection_name,
+                    vectors_config=models.VectorParams(size=self.vector_size, distance=models.Distance.COSINE),
+                )
+                self._manifest = {
+                    "version": MANIFEST_VERSION,
+                    "collection_name": self.settings.collection_name,
+                    "embedding_model": self.settings.embedding_model,
+                    "chunk_size": self.settings.chunk_size,
+                    "chunk_overlap": self.settings.chunk_overlap,
+                    "last_sync": None,
+                    "files": {},
+                }
+                self._save_manifest()
+            return self.sync()
+        finally:
+            if acquired:
+                self._release_operation()
 
     def _point_to_hit(self, point) -> SearchHit:
         payload = point.payload or {}
@@ -575,6 +639,26 @@ class VaultMemoryService:
                 "last_sync_summary": self._last_sync_summary,
             }
 
+    def health(self) -> dict[str, Any]:
+        service_status = self.status()
+        collection_exists = bool(service_status.get("ok"))
+        sync_failed = service_status.get("sync_state") == "failed"
+        files_indexed = int(service_status.get("files_indexed") or 0)
+        initial_sync_completed = bool(
+            service_status.get("last_full_sync_at") or service_status.get("last_sync")
+        )
+        ready = bool(
+            collection_exists
+            and not sync_failed
+            and (initial_sync_completed or files_indexed > 0)
+        )
+        return {
+            "status": "ok" if ready else "not-ready",
+            "live": True,
+            "ready": ready,
+            "service": service_status,
+        }
+
 
 
 def load_settings() -> Settings:
@@ -604,15 +688,6 @@ def build_mcp_server(service: VaultMemoryService | None = None) -> FastMCP:
     def get(path: str | None = None, chunk_id: str | None = None, vault: str | None = None) -> dict[str, Any]:
         return get_note_context(path=path, chunk_id=chunk_id, vault=vault)
 
-    @mcp.tool(name="sync_vault")
-    def sync_vault(paths: list[str] | None = None) -> dict[str, Any]:
-        """Scan vault markdown and sync changed files into Qdrant."""
-        return service.sync(paths=paths)
-
-    @mcp.tool(name="sync")
-    def sync(paths: list[str] | None = None) -> dict[str, Any]:
-        return sync_vault(paths=paths)
-
     @mcp.tool(name="memory_status")
     def memory_status() -> dict[str, Any]:
         """Report collection, manifest, and vault index state."""
@@ -622,14 +697,24 @@ def build_mcp_server(service: VaultMemoryService | None = None) -> FastMCP:
     def status() -> dict[str, Any]:
         return memory_status()
 
-    @mcp.tool(name="rebuild_vault_index")
-    def rebuild_vault_index() -> dict[str, Any]:
-        """Drop and rebuild the full index from the configured vaults."""
-        return service.rebuild()
+    if service.settings.enable_mutation_tools:
+        @mcp.tool(name="sync_vault")
+        def sync_vault(paths: list[str] | None = None) -> dict[str, Any]:
+            """Scan vault markdown and sync changed files into Qdrant."""
+            return service.sync(paths=paths)
 
-    @mcp.tool(name="rebuild")
-    def rebuild() -> dict[str, Any]:
-        return rebuild_vault_index()
+        @mcp.tool(name="sync")
+        def sync(paths: list[str] | None = None) -> dict[str, Any]:
+            return sync_vault(paths=paths)
+
+        @mcp.tool(name="rebuild_vault_index")
+        def rebuild_vault_index() -> dict[str, Any]:
+            """Drop and rebuild the full index from the configured vaults."""
+            return service.rebuild()
+
+        @mcp.tool(name="rebuild")
+        def rebuild() -> dict[str, Any]:
+            return rebuild_vault_index()
 
     return mcp
 
@@ -640,32 +725,44 @@ def build_fastapi_app(service: VaultMemoryService | None = None) -> FastAPI:
     mcp = build_mcp_server(service)
     mcp_app = mcp.http_app(path="/")
 
-    app = FastAPI(lifespan=mcp_app.lifespan)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        async with mcp_app.lifespan(app):
+            service.start_background_sync()
+            service.start_sync_monitor()
+            try:
+                yield
+            finally:
+                service.stop_sync_monitor()
+
+    app = FastAPI(lifespan=lifespan)
+
+    if service.settings.auth_token:
+        expected_authorization = f"Bearer {service.settings.auth_token}"
+
+        @app.middleware("http")
+        async def bearer_auth_middleware(request, call_next):
+            if request.url.path in AUTH_EXEMPT_PATHS:
+                return await call_next(request)
+            if request.headers.get("authorization") != expected_authorization:
+                return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+            return await call_next(request)
+
     app.mount("/mcp", mcp_app)
-    service.start_background_sync()
-    service.start_sync_monitor()
+
+    @app.get("/live")
+    def live() -> JSONResponse:
+        return JSONResponse(status_code=200, content={"status": "ok", "live": True})
+
+    @app.get("/ready")
+    def ready() -> JSONResponse:
+        health = service.health()
+        return JSONResponse(status_code=200 if health["ready"] else 503, content=health)
 
     @app.get("/health")
     def health() -> JSONResponse:
-        collection_exists = service.client.collection_exists(service.settings.collection_name)
-        ready = bool(collection_exists) and service._sync_state != "failed"
-        return JSONResponse(
-            status_code=200 if ready else 503,
-            content={
-                "status": "ok" if ready else "not-ready",
-                "ready": ready,
-                "service": {
-                    "ok": collection_exists,
-                    "collection_name": service.settings.collection_name,
-                    "sync_state": service._sync_state,
-                    "sync_error": service._sync_error,
-                    "sync_monitor_alive": bool(service._sync_monitor_thread and service._sync_monitor_thread.is_alive()),
-                    "last_full_sync_at": service._last_full_sync_completed_at,
-                    "sync_poll_seconds": service.settings.sync_poll_seconds,
-                    "sync_full_resync_seconds": service.settings.sync_full_resync_seconds,
-                },
-            },
-        )
+        health = service.health()
+        return JSONResponse(status_code=200 if health["ready"] else 503, content=health)
 
     @app.get("/")
     def root() -> dict[str, Any]:

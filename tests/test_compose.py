@@ -31,11 +31,13 @@ class ComposeLayoutTests(unittest.TestCase):
             "HVM_QDRANT_URL: http://qdrant:6333",
             "HVM_QDRANT_PATH: /data/qdrant",
             "HVM_MANIFEST_PATH: /data/manifest.json",
-            "- 6333:6333",
-            "- 8787:8787",
-            "- ${HVM_HOST_VAULT_1:?set HVM_HOST_VAULT_1}:/vault/root-1:ro",
-            "- ${HVM_HOST_VAULT_2:?set HVM_HOST_VAULT_2}:/vault/root-2:ro",
-            "- ${HVM_HOST_VAULT_3:?set HVM_HOST_VAULT_3}:/vault/root-3:ro",
+            "HVM_AUTH_TOKEN: ${HVM_AUTH_TOKEN:-}",
+            "HVM_ENABLE_MUTATION_TOOLS: ${HVM_ENABLE_MUTATION_TOOLS:-false}",
+            "HVM_VAULTS: ${HVM_VAULTS:-}",
+            "- 127.0.0.1:8787:8787",
+            "- ${HVM_HOST_VAULT_1:-./fixtures/sample-vault}:/vault/root-1:ro",
+            "- ${HVM_HOST_VAULT_2:-./fixtures/sample-vault}:/vault/root-2:ro",
+            "- ${HVM_HOST_VAULT_3:-./fixtures/sample-vault}:/vault/root-3:ro",
             "- hermes-vault-memory-data:/data",
             "- qdrant-storage:/qdrant/storage",
             "networks:",
@@ -47,3 +49,6 @@ class ComposeLayoutTests(unittest.TestCase):
         for fragment in expected_fragments:
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, compose_text)
+
+        self.assertNotIn("- 6333:6333", compose_text)
+        self.assertNotIn("- \"6333:6333\"", compose_text)

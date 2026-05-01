@@ -1,8 +1,8 @@
 services:
   qdrant:
     image: qdrant/qdrant:v1.17.1
-    ports:
-      - 6333:6333
+    # Qdrant is intentionally not published by default; memory-service reaches it on the compose network.
+    # For local debugging only, temporarily add: ports: ["127.0.0.1:6333:6333"]
     volumes:
       - qdrant-storage:/qdrant/storage
     restart: unless-stopped
@@ -29,8 +29,11 @@ services:
       HVM_EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
       HVM_CHUNK_SIZE: 1600
       HVM_CHUNK_OVERLAP: 200
+      HVM_AUTH_TOKEN: ${HVM_AUTH_TOKEN:-}
+      HVM_ENABLE_MUTATION_TOOLS: ${HVM_ENABLE_MUTATION_TOOLS:-false}
+      HVM_VAULTS: ${HVM_VAULTS:-}
     ports:
-      - 8787:8787
+      - 127.0.0.1:8787:8787
     healthcheck:
       test:
         - CMD-SHELL
@@ -39,9 +42,9 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - ${HVM_HOST_VAULT_1:?set HVM_HOST_VAULT_1}:/vault/root-1:ro
-      - ${HVM_HOST_VAULT_2:?set HVM_HOST_VAULT_2}:/vault/root-2:ro
-      - ${HVM_HOST_VAULT_3:?set HVM_HOST_VAULT_3}:/vault/root-3:ro
+      - ${HVM_HOST_VAULT_1:-./fixtures/sample-vault}:/vault/root-1:ro
+      - ${HVM_HOST_VAULT_2:-./fixtures/sample-vault}:/vault/root-2:ro
+      - ${HVM_HOST_VAULT_3:-./fixtures/sample-vault}:/vault/root-3:ro
       - hermes-vault-memory-data:/data
     restart: unless-stopped
 volumes:

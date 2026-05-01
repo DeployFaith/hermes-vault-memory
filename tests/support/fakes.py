@@ -172,9 +172,17 @@ class FastAPI:
         self.lifespan = lifespan
         self.routes: dict[tuple[str, str], Any] = {}
         self.mounted: list[tuple[str, Any]] = []
+        self.middlewares: list[tuple[str, Any]] = []
 
     def mount(self, path: str, app: Any) -> None:
         self.mounted.append((path, app))
+
+    def middleware(self, middleware_type: str):
+        def decorator(func):
+            self.middlewares.append((middleware_type, func))
+            return func
+
+        return decorator
 
     def get(self, path: str):
         def decorator(func):
