@@ -11,7 +11,7 @@ SRC = ROOT / 'src'
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from hermes_vault_memory.config import Settings
+from hermes_vault_memory.config import Settings, vault_targets
 
 
 class SettingsTests(unittest.TestCase):
@@ -63,3 +63,90 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.qdrant_url, 'http://qdrant:6333')
         self.assertEqual(settings.sync_poll_seconds, 60)
         self.assertEqual(settings.sync_full_resync_seconds, 21600)
+        self.assertIsNone(settings.auth_token)
+        self.assertFalse(settings.enable_mutation_tools)
+
+    def test_loads_named_vaults_from_environment(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first = root / 'first-vault'
+            second = root / 'second-vault'
+            first.mkdir()
+            second.mkdir()
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULTS': f'alpha:{first}, beta:{second}',
+                    'HVM_VAULT_ROOTS': str(root / 'ignored'),
+                    'HVM_AUTH_TOKEN': ' secret-token ',
+                    'HVM_ENABLE_MUTATION_TOOLS': 'true',
+                },
+                clear=True,
+            ):
+                settings = Settings.load()
+
+            self.assertEqual(settings.vault_roots, (first.resolve(), second.resolve()))
+            self.assertEqual(
+                [(target.vault, target.root) for target in vault_targets(settings)],
+                [('alpha', first.resolve()), ('beta', second.resolve())],
+            )
+            self.assertEqual(settings.auth_token, 'secret-token')
+            self.assertTrue(settings.enable_mutation_tools)
+
+    def test_rejects_invalid_chunk_settings(self) -> None:
+        invalid_envs = (
+            {'HVM_CHUNK_SIZE': '0'},
+            {'HVM_CHUNK_SIZE': '100', 'HVM_CHUNK_OVERLAP': '-1'},
+            {'HVM_CHUNK_SIZE': '100', 'HVM_CHUNK_OVERLAP': '100'},
+        )
+        for env in invalid_envs:
+            with self.subTest(env=env):
+                with patch.dict('os.environ', env, clear=True):
+                    with self.assertRaises(ValueError):
+                        Settings.load()
+
+    def test_rejects_invalid_sync_settings(self) -> None:
+        invalid_envs = (
+            {'HVM_SYNC_POLL_SECONDS': '0'},
+            {'HVM_SYNC_POLL_SECONDS': '60', 'HVM_SYNC_FULL_RESYNC_SECONDS': '59'},
+        )
+        for env in invalid_envs:
+            with self.subTest(env=env):
+                with patch.dict('os.environ', env, clear=True):
+                    with self.assertRaises(ValueError):
+                        Settings.load()
+
+    def test_rejects_duplicate_named_vault_names(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first = root / 'first'
+            second = root / 'second'
+            with patch.dict('os.environ', {'HVM_VAULTS': f'dupe:{first},dupe:{second}'}, clear=True):
+                with self.assertRaises(ValueError):
+                    Settings.load()
+
+    def test_rejects_duplicate_named_vault_roots(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            with patch.dict('os.environ', {'HVM_VAULTS': f'one:{vault},two:{vault}'}, clear=True):
+                with self.assertRaises(ValueError):
+                    Settings.load()
+
+    def test_rejects_duplicate_vault_roots_fallback(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            with patch.dict('os.environ', {'HVM_VAULT_ROOTS': f'{vault}:{vault}'}, clear=True):
+                with self.assertRaises(ValueError):
+                    Settings.load()
+
+    def test_rejects_duplicate_vault_names_fallback(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first = root / 'one' / 'vault'
+            second = root / 'two' / 'vault'
+            with patch.dict('os.environ', {'HVM_VAULT_ROOTS': f'{first}:{second}'}, clear=True):
+                with self.assertRaises(ValueError):
+                    Settings.load()

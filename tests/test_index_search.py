@@ -75,6 +75,34 @@ class QueryOnlyQdrantClient:
         return sum(float(left) * float(right) for left, right in zip(query, vector))
 
 
+class CountingTextEmbedding:
+    instances: list['CountingTextEmbedding'] = []
+
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        self.embed_calls: list[list[str]] = []
+        self.instances.append(self)
+
+    def embed(self, texts):
+        batch = list(texts)
+        self.embed_calls.append(batch)
+        return [[float((len(text) % 17) + 1), 1.0, 0.5] for text in batch]
+
+
+class CountingQdrantClient(QueryOnlyQdrantClient):
+    instances: list['CountingQdrantClient'] = []
+
+    def __init__(self, path: str | None = None, url: str | None = None, **kwargs: object):
+        super().__init__(path=path, url=url, **kwargs)
+        self.upsert_batches: list[list[object]] = []
+        self.instances.append(self)
+
+    def upsert(self, collection_name: str, points) -> None:
+        batch = list(points)
+        self.upsert_batches.append(batch)
+        super().upsert(collection_name=collection_name, points=batch)
+
+
 class IndexSearchTests(unittest.TestCase):
     def test_startup_rejects_missing_vault_mount(self) -> None:
         service_module = load_service_module()
@@ -248,6 +276,62 @@ class IndexSearchTests(unittest.TestCase):
             self.assertEqual(status['files_indexed'], 2)
             self.assertEqual(status['vault_counts']['vault']['files'], 2)
 
+    def test_document_upsert_batches_embeddings_once_for_multi_chunk_note(self) -> None:
+        service_module = load_service_module()
+        CountingTextEmbedding.instances.clear()
+        CountingQdrantClient.instances.clear()
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            vault.mkdir()
+            note = vault / 'multi-chunk.md'
+            note.write_text(
+                '# Batch Embedding Probe\n\n'
+                + '\n\n'.join(
+                    f'Paragraph {index} ' + ('batch embedding text ' * 20)
+                    for index in range(3)
+                ),
+                encoding='utf-8',
+            )
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                    'HVM_CHUNK_SIZE': '250',
+                    'HVM_CHUNK_OVERLAP': '0',
+                },
+                clear=True,
+            ):
+                with patch.object(service_module, 'TextEmbedding', CountingTextEmbedding), patch.object(
+                    service_module, 'QdrantClient', CountingQdrantClient
+                ):
+                    settings = Settings.load()
+                    service = service_module.VaultMemoryService(settings)
+
+            embedder = CountingTextEmbedding.instances[-1]
+            client = CountingQdrantClient.instances[-1]
+            embedder.embed_calls.clear()  # Ignore the vector-size probe from service startup.
+
+            summary = service.sync(paths=[note])
+
+            self.assertEqual(summary['indexed_files'], 1)
+            self.assertGreaterEqual(summary['upserted_chunks'], 2)
+            self.assertEqual(len(embedder.embed_calls), 1)
+            self.assertEqual(len(embedder.embed_calls[0]), summary['upserted_chunks'])
+            self.assertEqual(len(client.upsert_batches), 1)
+            self.assertEqual(len(client.upsert_batches[0]), summary['upserted_chunks'])
+            for point in client.upsert_batches[0]:
+                self.assertEqual(point.id, point.payload['chunk_id'])
+                self.assertIn('document_key', point.payload)
+                self.assertIn('text', point.payload)
+
     def test_read_only_calls_return_while_background_sync_is_busy(self) -> None:
         service_module = load_service_module()
         fixture_vault = Path(__file__).resolve().parents[1] / 'fixtures' / 'sample-vault'
@@ -301,6 +385,87 @@ class IndexSearchTests(unittest.TestCase):
                 service._sync_thread.join(timeout=10)
             self.assertEqual(service._sync_state, 'complete')
             self.assertIsNone(service._sync_error)
+
+    def test_mutating_operations_reject_concurrent_sync(self) -> None:
+        service_module = load_service_module()
+        fixture_vault = Path(__file__).resolve().parents[1] / 'fixtures' / 'sample-vault'
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            shutil.copytree(fixture_vault, vault)
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                },
+                clear=True,
+            ):
+                settings = Settings.load()
+                service = service_module.VaultMemoryService(settings)
+
+            sync_started = threading.Event()
+            release_sync = threading.Event()
+            original_upsert = service._upsert_document
+
+            def blocking_upsert(document):
+                sync_started.set()
+                release_sync.wait(timeout=5)
+                return original_upsert(document)
+
+            with patch.object(service, '_upsert_document', side_effect=blocking_upsert):
+                self.assertTrue(service.start_background_sync())
+                self.assertTrue(sync_started.wait(5))
+
+                self.assertFalse(service.start_background_sync())
+                with self.assertRaisesRegex(RuntimeError, 'sync already running'):
+                    service.sync()
+                with self.assertRaisesRegex(RuntimeError, 'sync already running'):
+                    service.rebuild()
+
+                release_sync.set()
+                if service._sync_thread:
+                    service._sync_thread.join(timeout=10)
+
+            self.assertEqual(service._sync_state, 'complete')
+            self.assertIsNone(service._sync_error)
+
+    def test_sync_monitor_can_be_stopped(self) -> None:
+        service_module = load_service_module()
+        fixture_vault = Path(__file__).resolve().parents[1] / 'fixtures' / 'sample-vault'
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            shutil.copytree(fixture_vault, vault)
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                    'HVM_SYNC_POLL_SECONDS': '60',
+                },
+                clear=True,
+            ):
+                settings = Settings.load()
+                service = service_module.VaultMemoryService(settings)
+
+            self.assertTrue(service.start_sync_monitor())
+            self.assertFalse(service.start_sync_monitor())
+            self.assertTrue(service.status()['sync_monitor_alive'])
+            self.assertTrue(service.stop_sync_monitor(timeout=1))
+            self.assertFalse(service.status()['sync_monitor_alive'])
 
     def test_search_uses_query_points_api(self) -> None:
         service_module = load_service_module()

@@ -27,14 +27,20 @@ def main() -> int:
         'memory-service:',
         'HVM_VAULT_ROOTS: /vault/root-1:/vault/root-2:/vault/root-3',
         'HVM_QDRANT_URL: http://qdrant:6333',
-        '- ${HVM_HOST_VAULT_1:?set HVM_HOST_VAULT_1}:/vault/root-1:ro',
-        '- ${HVM_HOST_VAULT_2:?set HVM_HOST_VAULT_2}:/vault/root-2:ro',
-        '- ${HVM_HOST_VAULT_3:?set HVM_HOST_VAULT_3}:/vault/root-3:ro',
+        'HVM_AUTH_TOKEN: ${HVM_AUTH_TOKEN:-}',
+        'HVM_ENABLE_MUTATION_TOOLS: ${HVM_ENABLE_MUTATION_TOOLS:-false}',
+        'HVM_VAULTS: ${HVM_VAULTS:-}',
+        '- 127.0.0.1:8787:8787',
+        '- ${HVM_HOST_VAULT_1:-./fixtures/sample-vault}:/vault/root-1:ro',
+        '- ${HVM_HOST_VAULT_2:-./fixtures/sample-vault}:/vault/root-2:ro',
+        '- ${HVM_HOST_VAULT_3:-./fixtures/sample-vault}:/vault/root-3:ro',
         '- hermes-vault-memory-data:/data',
         '- qdrant-storage:/qdrant/storage',
         'restart: unless-stopped',
     ):
         assert_contains(compose_text, fragment, "compose fragment")
+    if '- 6333:6333' in compose_text or '- "6333:6333"' in compose_text:
+        raise AssertionError("Qdrant port must not be published by default")
 
     service_module = load_service_module()
     fixture_vault = ROOT / "fixtures" / "sample-vault"
