@@ -472,6 +472,37 @@ class IndexSearchTests(unittest.TestCase):
 
             self.assertEqual(results['results'][0]['relative_path'], 'Services/Application Inventory.md')
 
+    def test_sync_reindexes_when_index_schema_version_changes(self) -> None:
+        service_module = load_service_module()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            vault.mkdir()
+            (vault / 'note.md').write_text('# Note\n\nStable body.\n', encoding='utf-8')
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                },
+                clear=True,
+            ):
+                settings = Settings.load()
+                service = service_module.VaultMemoryService(settings)
+
+            initial = service.sync()
+            self.assertEqual(initial['indexed_files'], 1)
+            service.manifest['index_schema_version'] = -1
+            changed = service.sync()
+
+            self.assertEqual(changed['indexed_files'], 1)
+            self.assertEqual(service.manifest['index_schema_version'], service_module.INDEX_SCHEMA_VERSION)
+
     def test_document_upsert_batches_embeddings_once_for_multi_chunk_note(self) -> None:
         service_module = load_service_module()
         CountingTextEmbedding.instances.clear()

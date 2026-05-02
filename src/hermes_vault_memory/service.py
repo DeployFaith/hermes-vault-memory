@@ -23,6 +23,7 @@ from .config import ScanTarget, Settings, vault_targets
 
 
 MANIFEST_VERSION = 1
+INDEX_SCHEMA_VERSION = 2
 AUTH_EXEMPT_PATHS = {"/health", "/live", "/ready"}
 SEARCH_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
@@ -139,6 +140,7 @@ class VaultMemoryService:
         if not self.settings.manifest_path.exists():
             return {
                 "version": MANIFEST_VERSION,
+                "index_schema_version": INDEX_SCHEMA_VERSION,
                 "collection_name": self.settings.collection_name,
                 "embedding_model": self.settings.embedding_model,
                 "chunk_size": self.settings.chunk_size,
@@ -204,12 +206,13 @@ class VaultMemoryService:
                     "last_full_sync_at": self._last_full_sync_completed_at,
                 }
             manifest_files = dict(self._manifest.get("files", {}))
+            manifest_index_schema_version = self._manifest.get("index_schema_version")
             last_full_sync_at = self._last_full_sync_at
             last_full_sync_completed_at = self._last_full_sync_completed_at
 
         current_files = self._file_metadata_snapshot()
         changed_paths: list[str] = []
-        needs_full_resync = False
+        needs_full_resync = manifest_index_schema_version != INDEX_SCHEMA_VERSION
         for key, current in current_files.items():
             previous = manifest_files.get(key)
             if not previous:
@@ -462,6 +465,7 @@ class VaultMemoryService:
         discovered = self._discover_files(paths)
         summary.scanned_files = len(discovered)
         current_keys: set[str] = set()
+        index_schema_changed = self._manifest.get("index_schema_version") != INDEX_SCHEMA_VERSION
 
         for target, path in discovered:
             if not path.exists():
@@ -473,7 +477,12 @@ class VaultMemoryService:
             with self._lock:
                 files_manifest = self._manifest.setdefault("files", {})
                 previous = files_manifest.get(key)
-            if previous and previous.get("size") == stat.st_size and float(previous.get("mtime", -1)) == stat.st_mtime:
+            if (
+                previous
+                and not index_schema_changed
+                and previous.get("size") == stat.st_size
+                and float(previous.get("mtime", -1)) == stat.st_mtime
+            ):
                 summary.skipped_files += 1
                 continue
 
@@ -528,6 +537,7 @@ class VaultMemoryService:
             self._manifest.update(
                 {
                     "version": MANIFEST_VERSION,
+                    "index_schema_version": INDEX_SCHEMA_VERSION,
                     "collection_name": self.settings.collection_name,
                     "embedding_model": self.settings.embedding_model,
                     "chunk_size": self.settings.chunk_size,
@@ -557,6 +567,7 @@ class VaultMemoryService:
                 )
                 self._manifest = {
                     "version": MANIFEST_VERSION,
+                    "index_schema_version": INDEX_SCHEMA_VERSION,
                     "collection_name": self.settings.collection_name,
                     "embedding_model": self.settings.embedding_model,
                     "chunk_size": self.settings.chunk_size,
@@ -713,6 +724,8 @@ class VaultMemoryService:
                 "ok": collection_exists,
                 "collection_name": self.settings.collection_name,
                 "embedding_model": self.settings.embedding_model,
+                "index_schema_version": self._manifest.get("index_schema_version"),
+                "expected_index_schema_version": INDEX_SCHEMA_VERSION,
                 "vector_size": self.vector_size,
                 "qdrant_path": str(self.settings.qdrant_path),
                 "manifest_path": str(self.settings.manifest_path),
