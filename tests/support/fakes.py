@@ -109,7 +109,7 @@ class QdrantClient:
             point = stored.get(point_id)
             if not point:
                 continue
-            results.append(SimpleNamespace(id=point.id, payload=point.payload, score=1.0))
+            results.append(SimpleNamespace(id=point.id, payload=point.payload))
         return results
 
     def scroll(

@@ -586,18 +586,19 @@ class VaultMemoryService:
     def _search_terms(self, query: str) -> set[str]:
         return {token for token in SEARCH_TOKEN_RE.findall(query.lower()) if len(token) > 2}
 
+    def _ordered_search_terms(self, text: str) -> list[str]:
+        return [token for token in SEARCH_TOKEN_RE.findall(text.lower()) if len(token) > 2]
+
     def _keyword_boost(self, query: str, payload: dict[str, Any]) -> float:
-        terms = self._search_terms(query)
+        ordered_terms = self._ordered_search_terms(query)
+        terms = set(ordered_terms)
         if not terms:
             return 0.0
         section_path = payload.get("section_path", []) or []
-        title_path_text = " ".join(
-            [
-                str(payload.get("title", "")),
-                str(payload.get("relative_path", "")),
-                " ".join(map(str, section_path)),
-            ]
-        ).lower()
+        title = str(payload.get("title", ""))
+        relative_path = str(payload.get("relative_path", ""))
+        section_text = " ".join(map(str, section_path))
+        title_path_text = " ".join([title, relative_path, section_text]).lower()
         body_text = str(payload.get("text", "")).lower()
         combined = f"{title_path_text} {body_text}"
         matched = {term for term in terms if term in combined}
@@ -605,7 +606,22 @@ class VaultMemoryService:
         phrase_bonus = 0.35 if query.lower().strip() and query.lower().strip() in combined else 0.0
         coverage_bonus = len(matched) / len(terms)
         title_path_bonus = 0.75 * (len(title_path_matched) / len(terms))
-        return coverage_bonus + title_path_bonus + phrase_bonus
+        title_tokens = set(self._ordered_search_terms(title))
+        filename_tokens = set(self._ordered_search_terms(Path(relative_path).stem))
+        exact_title_bonus = 0.0
+        for token_group in (title_tokens, filename_tokens):
+            if len(token_group) >= 2 and token_group.issubset(terms):
+                exact_title_bonus = max(exact_title_bonus, 1.25)
+        title_path_bigrams = {
+            " ".join(pair)
+            for pair in zip(self._ordered_search_terms(title_path_text), self._ordered_search_terms(title_path_text)[1:])
+        }
+        query_bigrams = [" ".join(pair) for pair in zip(ordered_terms, ordered_terms[1:])]
+        bigram_bonus = 0.0
+        if query_bigrams:
+            bigram_matches = sum(1 for bigram in query_bigrams if bigram in title_path_bigrams)
+            bigram_bonus = 1.5 * (bigram_matches / len(query_bigrams))
+        return coverage_bonus + title_path_bonus + phrase_bonus + exact_title_bonus + bigram_bonus
 
     def _rerank_points(self, query: str, points: Sequence[Any], limit: int) -> list[Any]:
         scored = []
@@ -661,7 +677,7 @@ class VaultMemoryService:
         payload = point.payload or {}
         return SearchHit(
             id=str(point.id),
-            score=float(point.score or 0.0),
+            score=float(getattr(point, "score", 0.0) or 0.0),
             vault=str(payload.get("vault", "")),
             relative_path=str(payload.get("relative_path", "")),
             title=str(payload.get("title", "")),

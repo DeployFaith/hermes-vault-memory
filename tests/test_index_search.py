@@ -62,7 +62,7 @@ class QueryOnlyQdrantClient:
         for point_id in ids:
             point = stored.get(point_id)
             if point is not None:
-                results.append(SimpleNamespace(id=point.id, payload=point.payload, score=1.0))
+                results.append(SimpleNamespace(id=point.id, payload=point.payload))
         return results
 
     def scroll(
