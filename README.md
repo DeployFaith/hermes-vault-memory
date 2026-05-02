@@ -12,7 +12,7 @@ This repo is meant to be deployed from Docker Compose or Dokploy on a host that 
   - chunks them structurally while skipping YAML frontmatter and heading-only sections
   - embeds them locally
   - stores vectors in Qdrant
-  - searches with semantic candidates plus lightweight keyword/path reranking
+  - searches with semantic candidates plus lexical title/path reranking
   - exposes MCP tools over HTTP at `/mcp`
   - exposes health endpoints for Compose, Dokploy, and reverse proxies
   - continuously polls mounted vault roots for Markdown changes and kicks off incremental syncs
@@ -112,7 +112,7 @@ Indexing intentionally avoids low-signal Markdown structure:
 
 - leading YAML frontmatter is stripped before chunking/search indexing, while source line numbers stay stable
 - heading-only sections are not embedded as standalone chunks
-- search asks Qdrant for a wider semantic candidate set, adds lightweight lexical candidates, then reranks with keyword, title, path, and section matches
+- search asks Qdrant for a wider semantic candidate set, adds lightweight lexical candidates, then reranks with keyword coverage, exact title/file-name matches, title/path bigrams, path matches, and section matches
 - an internal index schema version forces unchanged files to reindex after chunking/retrieval-quality changes
 
 This keeps agent searches from returning frontmatter blocks, empty headings, or broad context notes ahead of precise operational files.
