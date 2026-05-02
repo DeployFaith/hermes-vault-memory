@@ -112,6 +112,25 @@ class QdrantClient:
             results.append(SimpleNamespace(id=point.id, payload=point.payload, score=1.0))
         return results
 
+    def scroll(
+        self,
+        collection_name: str,
+        limit: int = 10,
+        offset: str | None = None,
+        with_payload: bool | list[str] = True,
+        with_vectors: bool = False,
+        **_: Any,
+    ) -> tuple[list[SimpleNamespace], str | None]:
+        points = sorted(self._collections[collection_name]['points'].values(), key=lambda point: point.id)
+        start = 0
+        if offset is not None:
+            ids = [point.id for point in points]
+            if offset in ids:
+                start = ids.index(offset) + 1
+        page = points[start : start + limit]
+        next_offset = page[-1].id if start + limit < len(points) and page else None
+        return [SimpleNamespace(id=point.id, payload=point.payload) for point in page], next_offset
+
     def query_points(self, collection_name: str, query: list[float], limit: int, query_filter: Filter | None = None, with_payload: bool = True, with_vectors: bool = False, **_: Any) -> SimpleNamespace:
         points = list(self._collections[collection_name]['points'].values())
         filtered: list[StoredPoint] = []

@@ -419,6 +419,31 @@ class VaultMemoryService:
         )
         return len(chunk_ids)
 
+    def _remove_qdrant_orphans(self, current_keys: set[str]) -> int:
+        stale_ids: list[str] = []
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.settings.collection_name,
+                limit=1024,
+                offset=offset,
+                with_payload=["document_key"],
+                with_vectors=False,
+            )
+            for point in points:
+                payload = point.payload or {}
+                document_key = payload.get("document_key")
+                if document_key and document_key not in current_keys:
+                    stale_ids.append(str(point.id))
+            if offset is None:
+                break
+
+        removed = 0
+        batch_size = 1024
+        for i in range(0, len(stale_ids), batch_size):
+            removed += self._delete_chunk_ids(stale_ids[i : i + batch_size])
+        return removed
+
     def sync(self, paths: Sequence[str | Path] | None = None) -> dict[str, Any]:
         acquired = self._acquire_operation("sync")
         try:
@@ -492,6 +517,9 @@ class VaultMemoryService:
                 summary.deleted_files += 1
                 summary.deleted_chunks += self._delete_chunk_ids(entry.get("chunk_ids", []))
                 summary.removed_orphans += 1
+            qdrant_orphans = self._remove_qdrant_orphans(current_keys)
+            summary.deleted_chunks += qdrant_orphans
+            summary.removed_orphans += qdrant_orphans
 
         with self._lock:
             self._manifest.update(

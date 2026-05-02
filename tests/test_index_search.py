@@ -65,6 +65,25 @@ class QueryOnlyQdrantClient:
                 results.append(SimpleNamespace(id=point.id, payload=point.payload, score=1.0))
         return results
 
+    def scroll(
+        self,
+        collection_name: str,
+        limit: int = 10,
+        offset: str | None = None,
+        with_payload: bool | list[str] = True,
+        with_vectors: bool = False,
+        **_: object,
+    ):
+        points = sorted(self._collections[collection_name]['points'].values(), key=lambda point: point.id)
+        start = 0
+        if offset is not None:
+            ids = [point.id for point in points]
+            if offset in ids:
+                start = ids.index(offset) + 1
+        page = points[start : start + limit]
+        next_offset = page[-1].id if start + limit < len(points) and page else None
+        return [SimpleNamespace(id=point.id, payload=point.payload) for point in page], next_offset
+
     def query_points(self, collection_name: str, query, limit: int, query_filter=None, with_payload: bool = True, with_vectors: bool = False, **_: object):
         points = list(self._collections[collection_name]['points'].values())
         ranked = sorted(points, key=lambda point: (-self._score(query, point.vector), point.id))
@@ -158,6 +177,22 @@ class IndexSearchTests(unittest.TestCase):
             self.assertEqual(summary['scanned_files'], 1)
             self.assertEqual(summary['indexed_files'], 1)
             self.assertEqual(list(service.manifest['files']), ['vault/keep.md'])
+
+            service.client.upsert(
+                collection_name=settings.collection_name,
+                points=[
+                    service_module.models.PointStruct(
+                        id='orphan-point',
+                        vector=[0.0] * service.vector_size,
+                        payload={'document_key': 'vault/Archives/OpenCode Sessions/skip.md'},
+                    )
+                ],
+            )
+            self.assertEqual(service.status()['points_indexed'], 2)
+
+            cleanup = service.sync()
+            self.assertEqual(cleanup['removed_orphans'], 1)
+            self.assertEqual(service.status()['points_indexed'], 1)
 
     def test_plan_sync_detects_modified_files(self) -> None:
         service_module = load_service_module()
