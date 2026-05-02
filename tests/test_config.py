@@ -36,6 +36,8 @@ class SettingsTests(unittest.TestCase):
                     'HVM_EMBEDDING_MODEL': 'demo-model',
                     'HVM_CHUNK_SIZE': '900',
                     'HVM_CHUNK_OVERLAP': '123',
+                    'HVM_EXCLUDE_GLOBS': 'Archives/OpenCode Sessions/**, tmp/*.md ',
+                    'HVM_MAX_FILE_BYTES': '2048',
                 },
                 clear=True,
             ):
@@ -50,6 +52,8 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(settings.embedding_model, 'demo-model')
             self.assertEqual(settings.chunk_size, 900)
             self.assertEqual(settings.chunk_overlap, 123)
+            self.assertEqual(settings.exclude_globs, ('Archives/OpenCode Sessions/**', 'tmp/*.md'))
+            self.assertEqual(settings.max_file_bytes, 2048)
             self.assertEqual(settings.sync_poll_seconds, 60)
             self.assertEqual(settings.sync_full_resync_seconds, 21600)
 
@@ -65,6 +69,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.sync_full_resync_seconds, 21600)
         self.assertIsNone(settings.auth_token)
         self.assertFalse(settings.enable_mutation_tools)
+        self.assertEqual(settings.exclude_globs, ())
+        self.assertIsNone(settings.max_file_bytes)
 
     def test_loads_named_vaults_from_environment(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -116,6 +122,11 @@ class SettingsTests(unittest.TestCase):
                 with patch.dict('os.environ', env, clear=True):
                     with self.assertRaises(ValueError):
                         Settings.load()
+
+    def test_rejects_invalid_max_file_bytes(self) -> None:
+        with patch.dict('os.environ', {'HVM_MAX_FILE_BYTES': '0'}, clear=True):
+            with self.assertRaises(ValueError):
+                Settings.load()
 
     def test_rejects_duplicate_named_vault_names(self) -> None:
         with TemporaryDirectory() as temp_dir:

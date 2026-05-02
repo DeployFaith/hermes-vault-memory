@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+import fnmatch
 import json
 import threading
 import time
@@ -139,6 +140,8 @@ class VaultMemoryService:
                 "embedding_model": self.settings.embedding_model,
                 "chunk_size": self.settings.chunk_size,
                 "chunk_overlap": self.settings.chunk_overlap,
+                "exclude_globs": list(self.settings.exclude_globs),
+                "max_file_bytes": self.settings.max_file_bytes,
                 "last_sync": None,
                 "files": {},
             }
@@ -174,12 +177,11 @@ class VaultMemoryService:
     def _file_metadata_snapshot(self) -> dict[str, dict[str, Any]]:
         snapshot: dict[str, dict[str, Any]] = {}
         for target in self._vault_targets:
-            root = target.root.resolve()
-            for path in root.rglob("*"):
-                if not path.is_file() or path.suffix.lower() not in {".md", ".markdown", ".mdown"}:
+            for path in target.root.rglob("*"):
+                if not self._is_indexable_file(target, path):
                     continue
                 stat = path.stat()
-                rel_path = path.resolve().relative_to(root).as_posix()
+                rel_path = self._relative_path(target, path)
                 key = self._document_key(target.vault, rel_path)
                 snapshot[key] = {
                     "path": str(path),
@@ -314,6 +316,23 @@ class VaultMemoryService:
     def _document_key(self, vault: str, relative_path: str) -> str:
         return f"{vault}/{relative_path}"
 
+    def _relative_path(self, target: ScanTarget, path: Path) -> str:
+        return path.resolve().relative_to(target.root.resolve()).as_posix()
+
+    def _is_excluded_path(self, relative_path: str) -> bool:
+        return any(fnmatch.fnmatch(relative_path, pattern) for pattern in self.settings.exclude_globs)
+
+    def _is_indexable_file(self, target: ScanTarget, path: Path) -> bool:
+        if not path.is_file() or path.suffix.lower() not in {".md", ".markdown", ".mdown"}:
+            return False
+        relative_path = self._relative_path(target, path)
+        if self._is_excluded_path(relative_path):
+            return False
+        max_file_bytes = self.settings.max_file_bytes
+        if max_file_bytes is not None and path.stat().st_size > max_file_bytes:
+            return False
+        return True
+
     def _resolve_target(self, path: str | Path, vault: str | None = None) -> tuple[ScanTarget, Path]:
         candidate = Path(path).expanduser()
         if candidate.is_absolute():
@@ -340,14 +359,14 @@ class VaultMemoryService:
             discovered: list[tuple[ScanTarget, Path]] = []
             for raw in paths:
                 target, absolute = self._resolve_target(raw)
-                if absolute.is_file() and absolute.suffix.lower() in {".md", ".markdown", ".mdown"}:
+                if self._is_indexable_file(target, absolute):
                     discovered.append((target, absolute))
             return discovered
 
         discovered = []
         for target in self._vault_targets:
             for path in target.root.rglob("*"):
-                if path.is_file() and path.suffix.lower() in {".md", ".markdown", ".mdown"}:
+                if self._is_indexable_file(target, path):
                     discovered.append((target, path))
         return discovered
 
@@ -482,6 +501,8 @@ class VaultMemoryService:
                     "embedding_model": self.settings.embedding_model,
                     "chunk_size": self.settings.chunk_size,
                     "chunk_overlap": self.settings.chunk_overlap,
+                    "exclude_globs": list(self.settings.exclude_globs),
+                    "max_file_bytes": self.settings.max_file_bytes,
                     "last_sync": self._now(),
                     "vault_roots": [str(target.root) for target in self._vault_targets],
                 }
@@ -509,6 +530,8 @@ class VaultMemoryService:
                     "embedding_model": self.settings.embedding_model,
                     "chunk_size": self.settings.chunk_size,
                     "chunk_overlap": self.settings.chunk_overlap,
+                    "exclude_globs": list(self.settings.exclude_globs),
+                    "max_file_bytes": self.settings.max_file_bytes,
                     "last_sync": None,
                     "files": {},
                 }
@@ -624,6 +647,8 @@ class VaultMemoryService:
                 "qdrant_path": str(self.settings.qdrant_path),
                 "manifest_path": str(self.settings.manifest_path),
                 "vault_roots": [str(target.root) for target in self._vault_targets],
+                "exclude_globs": list(self.settings.exclude_globs),
+                "max_file_bytes": self.settings.max_file_bytes,
                 "files_indexed": len(files),
                 "chunks_indexed": chunk_count,
                 "points_indexed": point_count,

@@ -126,6 +126,39 @@ class IndexSearchTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 service_module.VaultMemoryService(settings)
 
+    def test_sync_respects_exclude_globs_and_max_file_bytes(self) -> None:
+        service_module = load_service_module()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            archive = vault / 'Archives' / 'OpenCode Sessions'
+            archive.mkdir(parents=True)
+            (vault / 'keep.md').write_text('# Keep\nUseful durable note.\n')
+            (archive / 'skip.md').write_text('# Skip\nRaw transcript dump.\n')
+            (vault / 'large.md').write_text('# Large\n' + ('x' * 80))
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                    'HVM_EXCLUDE_GLOBS': 'Archives/OpenCode Sessions/**',
+                    'HVM_MAX_FILE_BYTES': '64',
+                },
+                clear=True,
+            ):
+                settings = Settings.load()
+                service = service_module.VaultMemoryService(settings)
+
+            summary = service.sync()
+            self.assertEqual(summary['scanned_files'], 1)
+            self.assertEqual(summary['indexed_files'], 1)
+            self.assertEqual(list(service.manifest['files']), ['vault/keep.md'])
+
     def test_plan_sync_detects_modified_files(self) -> None:
         service_module = load_service_module()
         fixture_vault = Path(__file__).resolve().parents[1] / 'fixtures' / 'sample-vault'

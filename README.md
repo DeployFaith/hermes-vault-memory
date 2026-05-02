@@ -63,6 +63,8 @@ Common environment variables:
 - `HVM_EMBEDDING_MODEL`: fastembed model. Default: `BAAI/bge-small-en-v1.5`.
 - `HVM_CHUNK_SIZE`: target chunk size. Default: `1600`.
 - `HVM_CHUNK_OVERLAP`: chunk overlap. Default: `200`.
+- `HVM_EXCLUDE_GLOBS`: comma-separated relative-path glob patterns to skip. Compose defaults to `Archives/OpenCode Sessions/**` so raw agent transcript archives do not dominate the index.
+- `HVM_MAX_FILE_BYTES`: optional maximum Markdown file size to index. Compose defaults to `2097152` (2 MiB); set empty to disable.
 - `HVM_AUTH_TOKEN`: optional bearer auth value for HTTP/MCP access. If set, non-health endpoints require an `Authorization` header containing `Bearer YOUR_TOKEN`.
 - `HVM_ENABLE_MUTATION_TOOLS`: enables MCP tools that mutate the vector index (`sync_vault`/`sync`, `rebuild_vault_index`/`rebuild`). Default: `false`.
 

@@ -31,6 +31,8 @@ class ComposeLayoutTests(unittest.TestCase):
             "HVM_QDRANT_URL: http://qdrant:6333",
             "HVM_QDRANT_PATH: /data/qdrant",
             "HVM_MANIFEST_PATH: /data/manifest.json",
+            "HVM_EXCLUDE_GLOBS: ${HVM_EXCLUDE_GLOBS:-Archives/OpenCode Sessions/**}",
+            "HVM_MAX_FILE_BYTES: ${HVM_MAX_FILE_BYTES:-2097152}",
             "HVM_AUTH_TOKEN: ${HVM_AUTH_TOKEN:-}",
             "HVM_ENABLE_MUTATION_TOOLS: ${HVM_ENABLE_MUTATION_TOOLS:-false}",
             "HVM_VAULTS: ${HVM_VAULTS:-}",

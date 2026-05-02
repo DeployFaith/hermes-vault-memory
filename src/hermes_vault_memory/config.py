@@ -40,6 +40,21 @@ def _parse_bool(value: str | None, *, default: bool = False) -> bool:
     raise ValueError(f"invalid boolean value: {value!r}")
 
 
+def _split_env_csv(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _parse_optional_positive_int(value: str | None) -> int | None:
+    if value is None or not value.strip():
+        return None
+    parsed = int(value)
+    if parsed < 1:
+        raise ValueError("max_file_bytes must be >= 1")
+    return parsed
+
+
 def _validate_targets(targets: Sequence[ScanTarget]) -> tuple[ScanTarget, ...]:
     seen_names: set[str] = set()
     seen_roots: set[Path] = set()
@@ -113,6 +128,8 @@ class Settings:
     auth_token: str | None
     enable_mutation_tools: bool
     vaults: tuple[ScanTarget, ...]
+    exclude_globs: tuple[str, ...]
+    max_file_bytes: int | None
 
     @classmethod
     def load(cls) -> "Settings":
@@ -133,6 +150,8 @@ class Settings:
         manifest_path = Path(os.environ.get("HVM_MANIFEST_PATH", data_dir / "manifest.json")).expanduser().resolve()
         sync_poll_seconds = int(os.environ.get("HVM_SYNC_POLL_SECONDS", "60"))
         sync_full_resync_seconds = int(os.environ.get("HVM_SYNC_FULL_RESYNC_SECONDS", "21600"))
+        exclude_globs = _split_env_csv(os.environ.get("HVM_EXCLUDE_GLOBS"))
+        max_file_bytes = _parse_optional_positive_int(os.environ.get("HVM_MAX_FILE_BYTES"))
         _validate_chunk_settings(chunk_size, chunk_overlap)
         _validate_sync_settings(sync_poll_seconds, sync_full_resync_seconds)
         auth_token = os.environ.get("HVM_AUTH_TOKEN", "").strip() or None
@@ -153,6 +172,8 @@ class Settings:
             auth_token=auth_token,
             enable_mutation_tools=enable_mutation_tools,
             vaults=vaults,
+            exclude_globs=exclude_globs,
+            max_file_bytes=max_file_bytes,
         )
 
     def ensure_dirs(self) -> None:
