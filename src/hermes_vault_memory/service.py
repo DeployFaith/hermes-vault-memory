@@ -620,6 +620,43 @@ class VaultMemoryService:
             reranked.append(SimpleNamespace(id=point.id, payload=point.payload, score=hybrid_score))
         return reranked
 
+    def _lexical_candidates(self, query: str, vault: str | None, limit: int) -> list[Any]:
+        if not self._search_terms(query):
+            return []
+        candidates: list[tuple[float, str, Any]] = []
+        offset = None
+        scanned = 0
+        max_scan = 5000
+        while scanned < max_scan:
+            points, offset = self.client.scroll(
+                collection_name=self.settings.collection_name,
+                limit=min(512, max_scan - scanned),
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            scanned += len(points)
+            for point in points:
+                payload = point.payload or {}
+                if vault and payload.get("vault") != vault:
+                    continue
+                score = self._keyword_boost(query, payload)
+                if score > 0:
+                    candidates.append((score, str(point.id), SimpleNamespace(id=point.id, payload=payload, score=0.0)))
+            if offset is None:
+                break
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        return [point for _, _, point in candidates[:limit]]
+
+    def _merge_points(self, *point_groups: Sequence[Any]) -> list[Any]:
+        merged: dict[str, Any] = {}
+        for group in point_groups:
+            for point in group:
+                point_id = str(point.id)
+                if point_id not in merged or float(getattr(point, "score", 0.0) or 0.0) > float(getattr(merged[point_id], "score", 0.0) or 0.0):
+                    merged[point_id] = point
+        return list(merged.values())
+
     def _point_to_hit(self, point) -> SearchHit:
         payload = point.payload or {}
         return SearchHit(
@@ -652,8 +689,9 @@ class VaultMemoryService:
                 with_payload=True,
                 with_vectors=False,
             )
-            points = getattr(results, "points", results)
-            reranked = self._rerank_points(query, list(points), limit)
+            points = list(getattr(results, "points", results))
+            lexical_points = self._lexical_candidates(query, vault, candidate_limit)
+            reranked = self._rerank_points(query, self._merge_points(points, lexical_points), limit)
             return {
                 "query": query,
                 "limit": limit,

@@ -437,18 +437,15 @@ class IndexSearchTests(unittest.TestCase):
 
             class SemanticNoiseQdrantClient(QueryOnlyQdrantClient):
                 def query_points(self, collection_name: str, query, limit: int, query_filter=None, with_payload: bool = True, with_vectors: bool = False, **_: object):
-                    points = list(self._collections[collection_name]['points'].values())
-                    ranked = sorted(
-                        points,
-                        key=lambda point: (
-                            0 if point.payload.get('relative_path') == 'Working With Kyle.md' else 1,
-                            point.id,
-                        ),
-                    )
+                    points = [
+                        point
+                        for point in self._collections[collection_name]['points'].values()
+                        if point.payload.get('relative_path') == 'Working With Kyle.md'
+                    ]
                     return SimpleNamespace(
                         points=[
-                            SimpleNamespace(id=point.id, payload=point.payload, score=0.99 if index == 0 else 0.80)
-                            for index, point in enumerate(ranked[:limit])
+                            SimpleNamespace(id=point.id, payload=point.payload, score=0.99)
+                            for point in points[:limit]
                         ]
                     )
 

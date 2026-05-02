@@ -112,7 +112,7 @@ Indexing intentionally avoids low-signal Markdown structure:
 
 - leading YAML frontmatter is stripped before chunking/search indexing, while source line numbers stay stable
 - heading-only sections are not embedded as standalone chunks
-- search asks Qdrant for a wider semantic candidate set, then reranks candidates with lightweight keyword, title, path, and section matches
+- search asks Qdrant for a wider semantic candidate set, adds lightweight lexical candidates, then reranks with keyword, title, path, and section matches
 - an internal index schema version forces unchanged files to reindex after chunking/retrieval-quality changes
 
 This keeps agent searches from returning frontmatter blocks, empty headings, or broad context notes ahead of precise operational files.
