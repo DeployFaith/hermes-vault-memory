@@ -344,6 +344,134 @@ class IndexSearchTests(unittest.TestCase):
             self.assertEqual(status['files_indexed'], 2)
             self.assertEqual(status['vault_counts']['vault']['files'], 2)
 
+    def test_frontmatter_is_not_indexed_and_heading_title_is_used(self) -> None:
+        service_module = load_service_module()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            vault.mkdir()
+            note = vault / 'frontmatter.md'
+            note.write_text(
+                '---\n'
+                'tags:\n'
+                '  - codex\n'
+                'created: 2026-05-02\n'
+                '---\n\n'
+                '# Real Memory Title\n\n'
+                'Durable operational fact lives here.\n',
+                encoding='utf-8',
+            )
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                },
+                clear=True,
+            ):
+                settings = Settings.load()
+                service = service_module.VaultMemoryService(settings)
+
+            service.sync()
+            stored = service.get(path='frontmatter.md')
+
+            self.assertEqual(stored['document']['title'], 'Real Memory Title')
+            self.assertEqual(stored['document']['chunk_count'], 1)
+            self.assertNotIn('tags:', stored['chunks'][0]['text'])
+            self.assertNotIn('created:', stored['chunks'][0]['text'])
+            self.assertIn('Durable operational fact', stored['chunks'][0]['text'])
+
+    def test_heading_only_markdown_does_not_create_search_noise(self) -> None:
+        service_module = load_service_module()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            vault.mkdir()
+            (vault / 'outline.md').write_text('# Codex MCP\n\n## Related Commands\n', encoding='utf-8')
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                },
+                clear=True,
+            ):
+                settings = Settings.load()
+                service = service_module.VaultMemoryService(settings)
+
+            service.sync()
+
+            self.assertEqual(service.manifest['files']['vault/outline.md']['chunk_count'], 0)
+            self.assertEqual(service.status()['points_indexed'], 0)
+            self.assertEqual(service.search('Codex MCP', limit=5)['results'], [])
+
+    def test_search_reranks_exact_keyword_and_path_matches_over_semantic_noise(self) -> None:
+        service_module = load_service_module()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            services = vault / 'Services'
+            services.mkdir(parents=True)
+            (services / 'Application Inventory.md').write_text(
+                '# Application Inventory\n\n'
+                'Hermes Vault Memory runs under Dokploy on psalmbox.\n',
+                encoding='utf-8',
+            )
+            (vault / 'Working With Kyle.md').write_text(
+                '# Working With Kyle\n\n'
+                'This broad infrastructure context mentions psalmbox services and many operational details. '
+                + ('general agent memory guidance ' * 30),
+                encoding='utf-8',
+            )
+
+            class SemanticNoiseQdrantClient(QueryOnlyQdrantClient):
+                def query_points(self, collection_name: str, query, limit: int, query_filter=None, with_payload: bool = True, with_vectors: bool = False, **_: object):
+                    points = list(self._collections[collection_name]['points'].values())
+                    ranked = sorted(
+                        points,
+                        key=lambda point: (
+                            0 if point.payload.get('relative_path') == 'Working With Kyle.md' else 1,
+                            point.id,
+                        ),
+                    )
+                    return SimpleNamespace(
+                        points=[
+                            SimpleNamespace(id=point.id, payload=point.payload, score=0.99 if index == 0 else 0.80)
+                            for index, point in enumerate(ranked[:limit])
+                        ]
+                    )
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                },
+                clear=True,
+            ):
+                with patch.object(service_module, 'QdrantClient', SemanticNoiseQdrantClient):
+                    settings = Settings.load()
+                    service = service_module.VaultMemoryService(settings)
+
+            service.sync()
+            results = service.search('psalmbox services application inventory', limit=1)
+
+            self.assertEqual(results['results'][0]['relative_path'], 'Services/Application Inventory.md')
+
     def test_document_upsert_batches_embeddings_once_for_multi_chunk_note(self) -> None:
         service_module = load_service_module()
         CountingTextEmbedding.instances.clear()

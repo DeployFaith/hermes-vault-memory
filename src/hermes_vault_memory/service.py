@@ -5,9 +5,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import fnmatch
 import json
+import re
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterable, Sequence
 
 from fastapi import FastAPI
@@ -22,6 +24,7 @@ from .config import ScanTarget, Settings, vault_targets
 
 MANIFEST_VERSION = 1
 AUTH_EXEMPT_PATHS = {"/health", "/live", "/ready"}
+SEARCH_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
 
 @dataclass(slots=True)
@@ -569,6 +572,43 @@ class VaultMemoryService:
             if acquired:
                 self._release_operation()
 
+    def _search_terms(self, query: str) -> set[str]:
+        return {token for token in SEARCH_TOKEN_RE.findall(query.lower()) if len(token) > 2}
+
+    def _keyword_boost(self, query: str, payload: dict[str, Any]) -> float:
+        terms = self._search_terms(query)
+        if not terms:
+            return 0.0
+        section_path = payload.get("section_path", []) or []
+        title_path_text = " ".join(
+            [
+                str(payload.get("title", "")),
+                str(payload.get("relative_path", "")),
+                " ".join(map(str, section_path)),
+            ]
+        ).lower()
+        body_text = str(payload.get("text", "")).lower()
+        combined = f"{title_path_text} {body_text}"
+        matched = {term for term in terms if term in combined}
+        title_path_matched = {term for term in terms if term in title_path_text}
+        phrase_bonus = 0.35 if query.lower().strip() and query.lower().strip() in combined else 0.0
+        coverage_bonus = len(matched) / len(terms)
+        title_path_bonus = 0.75 * (len(title_path_matched) / len(terms))
+        return coverage_bonus + title_path_bonus + phrase_bonus
+
+    def _rerank_points(self, query: str, points: Sequence[Any], limit: int) -> list[Any]:
+        scored = []
+        for point in points:
+            semantic_score = float(getattr(point, "score", 0.0) or 0.0)
+            payload = point.payload or {}
+            hybrid_score = semantic_score + self._keyword_boost(query, payload)
+            scored.append((hybrid_score, semantic_score, str(getattr(point, "id", "")), point))
+        scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        reranked = []
+        for hybrid_score, _, _, point in scored[:limit]:
+            reranked.append(SimpleNamespace(id=point.id, payload=point.payload, score=hybrid_score))
+        return reranked
+
     def _point_to_hit(self, point) -> SearchHit:
         payload = point.payload or {}
         return SearchHit(
@@ -592,20 +632,22 @@ class VaultMemoryService:
                 qfilter = models.Filter(
                     must=[models.FieldCondition(key="vault", match=models.MatchValue(value=vault))]
                 )
+            candidate_limit = max(limit, min(100, max(limit * 4, limit + 10)))
             results = self.client.query_points(
                 collection_name=self.settings.collection_name,
                 query=query_vector,
-                limit=limit,
+                limit=candidate_limit,
                 query_filter=qfilter,
                 with_payload=True,
                 with_vectors=False,
             )
             points = getattr(results, "points", results)
+            reranked = self._rerank_points(query, list(points), limit)
             return {
                 "query": query,
                 "limit": limit,
                 "vault": vault,
-                "results": [self._point_to_hit(result).to_dict() for result in points],
+                "results": [self._point_to_hit(result).to_dict() for result in reranked],
             }
     def get(self, path: str | None = None, chunk_id: str | None = None, vault: str | None = None) -> dict[str, Any]:
         with self._lock:

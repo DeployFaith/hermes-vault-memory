@@ -10,6 +10,7 @@ from typing import Iterable
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 LIST_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
+FRONTMATTER_BOUNDARY = {"---", "..."}
 
 
 @dataclass(slots=True)
@@ -61,6 +62,25 @@ def _clean_text(text: str) -> str:
     while lines and not lines[-1].strip():
         lines.pop()
     return "\n".join(lines)
+
+
+def _strip_yaml_frontmatter_preserve_lines(text: str) -> str:
+    """Remove leading YAML frontmatter while keeping line numbers stable."""
+    normalised = _normalise_newlines(text)
+    lines = normalised.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return normalised
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() in FRONTMATTER_BOUNDARY:
+            return "\n".join([""] * (idx + 1) + lines[idx + 1 :])
+    return normalised
+
+
+def _has_indexable_body(blocks: Iterable[Block]) -> bool:
+    for block in blocks:
+        if not HEADING_RE.match(block.text.strip()) and block.text.strip():
+            return True
+    return False
 
 
 def _extract_title(text: str, fallback: str) -> str:
@@ -270,10 +290,10 @@ def _chunk_with_prefix(
 
 def parse_markdown_file(path: Path, vault: str, root: Path, *, chunk_size: int, chunk_overlap: int) -> ParsedDocument:
     raw = path.read_text(encoding="utf-8", errors="ignore")
-    text = _normalise_newlines(raw)
+    text = _strip_yaml_frontmatter_preserve_lines(raw)
     relative_path = path.resolve().relative_to(root.resolve()).as_posix()
     title = _extract_title(text, fallback=path.stem)
-    file_hash = sha256(text.encode("utf-8")).hexdigest()
+    file_hash = sha256(_normalise_newlines(raw).encode("utf-8")).hexdigest()
     stat = path.stat()
 
     lines = text.split("\n")
@@ -284,19 +304,19 @@ def parse_markdown_file(path: Path, vault: str, root: Path, *, chunk_size: int, 
     seen: dict[tuple[tuple[str, ...], str], int] = {}
     for section_index, section in enumerate(sections):
         heading_path = section.heading_path
+        content_blocks = [block for block in section.blocks if not HEADING_RE.match(block.text.strip())]
+        if not _has_indexable_body(content_blocks):
+            continue
         prefix_parts = [f"Vault: {vault}", f"Path: {relative_path}"]
         if heading_path:
             prefix_parts.append(f"Section: {' > '.join(heading_path)}")
         prefix = "\n".join(prefix_parts) + "\n\n"
         raw_chunks = _chunk_with_prefix(
             prefix=prefix,
-            blocks=section.blocks,
+            blocks=content_blocks,
             max_chars=chunk_size,
             overlap_chars=chunk_overlap,
         )
-        if not raw_chunks and heading_path:
-            # Keep heading-only sections visible for lookup.
-            raw_chunks = [(prefix.rstrip(), 1, 1)]
         for raw_text, start_line, end_line in raw_chunks:
             content_hash = sha256(raw_text.encode("utf-8")).hexdigest()
             occurrence_key = (heading_path, content_hash)
@@ -318,20 +338,16 @@ def parse_markdown_file(path: Path, vault: str, root: Path, *, chunk_size: int, 
             )
 
     if not chunks:
-        prefix = f"Vault: {vault}\nPath: {relative_path}\n\n"
-        content_hash = sha256(prefix.encode("utf-8")).hexdigest()
-        chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{vault}:{relative_path}:{content_hash}:0"))
-        chunks.append(
-            Chunk(
-                chunk_index=0,
-                chunk_id=chunk_id,
-                text=prefix.rstrip(),
-                section_path=(),
-                start_line=1,
-                end_line=1,
-                char_count=len(prefix),
-                content_hash=content_hash,
-            )
+        return ParsedDocument(
+            vault=vault,
+            root=root,
+            path=path,
+            relative_path=relative_path,
+            title=title,
+            file_hash=file_hash,
+            size=stat.st_size,
+            mtime=stat.st_mtime,
+            chunks=[],
         )
 
     return ParsedDocument(

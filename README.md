@@ -9,9 +9,10 @@ This repo is meant to be deployed from Docker Compose or Dokploy on a host that 
 - runs Qdrant privately on the Docker Compose network
 - runs a Python memory-service that:
   - scans Markdown notes from configured vaults
-  - chunks them structurally
+  - chunks them structurally while skipping YAML frontmatter and heading-only sections
   - embeds them locally
   - stores vectors in Qdrant
+  - searches with semantic candidates plus lightweight keyword/path reranking
   - exposes MCP tools over HTTP at `/mcp`
   - exposes health endpoints for Compose, Dokploy, and reverse proxies
   - continuously polls mounted vault roots for Markdown changes and kicks off incremental syncs
@@ -104,6 +105,16 @@ Example local Hermes MCP server entry:
 ```
 
 If `HVM_AUTH_TOKEN` is unset, omit the `headers` block. For public or shared networks, set `HVM_AUTH_TOKEN` and terminate TLS/auth at a reverse proxy or private overlay network.
+
+## Retrieval quality
+
+Indexing intentionally avoids low-signal Markdown structure:
+
+- leading YAML frontmatter is stripped before chunking/search indexing, while source line numbers stay stable
+- heading-only sections are not embedded as standalone chunks
+- search asks Qdrant for a wider semantic candidate set, then reranks candidates with lightweight keyword, title, path, and section matches
+
+This keeps agent searches from returning frontmatter blocks, empty headings, or broad context notes ahead of precise operational files.
 
 ## MCP tools
 
