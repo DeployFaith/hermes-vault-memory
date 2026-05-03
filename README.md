@@ -113,6 +113,7 @@ Indexing intentionally avoids low-signal Markdown structure:
 - leading YAML frontmatter is stripped before chunking/search indexing, while source line numbers stay stable
 - heading-only sections are not embedded as standalone chunks
 - search asks Qdrant for a wider semantic candidate set, adds lightweight lexical candidates, then reranks with keyword coverage, exact title/file-name matches, title/path bigrams, path matches, and section matches
+- `find_notes` provides a dedicated manifest-backed title/path lookup for exact note discovery, including zero-chunk notes that are intentionally absent from vector search
 - an internal index schema version forces unchanged files to reindex after chunking/retrieval-quality changes
 
 This keeps agent searches from returning frontmatter blocks, empty headings, or broad context notes ahead of precise operational files.
@@ -121,7 +122,8 @@ This keeps agent searches from returning frontmatter blocks, empty headings, or 
 
 Read-only tools are registered by default:
 
-- `search_vault` / `search`
+- `search_vault` / `search` for semantic + lexical chunk search
+- `find_notes` / `find_note` / `find` for exact/fuzzy note title/path lookup without vector search
 - `get_note_context` / `get`
 - `memory_status` / `status`
 

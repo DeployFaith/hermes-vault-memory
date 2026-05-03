@@ -469,6 +469,54 @@ class IndexSearchTests(unittest.TestCase):
 
             self.assertEqual(results['results'][0]['relative_path'], 'Services/Application Inventory.md')
 
+    def test_find_notes_returns_exact_title_and_zero_chunk_notes_without_vector_search(self) -> None:
+        service_module = load_service_module()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / 'vault'
+            data_dir = root / 'data'
+            services = vault / 'Services'
+            services.mkdir(parents=True)
+            (services / 'Application Inventory.md').write_text(
+                '# Application Inventory\n\nHermes Vault Memory runs under Dokploy on psalmbox.\n',
+                encoding='utf-8',
+            )
+            (vault / 'Codex MCP.md').write_text('# Codex MCP\n\n## Related Commands\n', encoding='utf-8')
+            (vault / 'Home.md').write_text(
+                '# psalmbox\n\n- [[Application Inventory]]\n- [[Codex MCP]]\n',
+                encoding='utf-8',
+            )
+
+            class NoVectorSearchClient(QueryOnlyQdrantClient):
+                def query_points(self, *args, **kwargs):
+                    raise AssertionError('find_notes must not use vector search')
+
+            with patch.dict(
+                'os.environ',
+                {
+                    'HVM_VAULT_ROOTS': str(vault),
+                    'HVM_DATA_DIR': str(data_dir),
+                    'HVM_QDRANT_PATH': str(data_dir / 'qdrant'),
+                    'HVM_MANIFEST_PATH': str(data_dir / 'manifest.json'),
+                    'HVM_COLLECTION_NAME': 'demo_collection',
+                },
+                clear=True,
+            ):
+                with patch.object(service_module, 'QdrantClient', NoVectorSearchClient):
+                    settings = Settings.load()
+                    service = service_module.VaultMemoryService(settings)
+
+            service.sync()
+
+            exact = service.find_notes('application inventory', limit=2)
+            self.assertEqual(exact['results'][0]['relative_path'], 'Services/Application Inventory.md')
+            self.assertEqual(exact['results'][0]['match_type'], 'exact_title')
+            self.assertNotEqual(exact['results'][0]['relative_path'], 'Home.md')
+
+            zero_chunk = service.find_notes('Codex MCP', limit=1)
+            self.assertEqual(zero_chunk['results'][0]['relative_path'], 'Codex MCP.md')
+            self.assertEqual(zero_chunk['results'][0]['chunk_count'], 0)
+
     def test_sync_reindexes_when_index_schema_version_changes(self) -> None:
         service_module = load_service_module()
         with TemporaryDirectory() as temp_dir:

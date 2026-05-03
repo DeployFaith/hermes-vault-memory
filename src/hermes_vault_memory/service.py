@@ -589,6 +589,89 @@ class VaultMemoryService:
     def _ordered_search_terms(self, text: str) -> list[str]:
         return [token for token in SEARCH_TOKEN_RE.findall(text.lower()) if len(token) > 2]
 
+    def _normalized_lookup_text(self, text: str) -> str:
+        return " ".join(self._ordered_search_terms(text))
+
+    def _note_match_score(self, query: str, entry: dict[str, Any]) -> tuple[float, str]:
+        ordered_terms = self._ordered_search_terms(query)
+        terms = set(ordered_terms)
+        if not terms:
+            return 0.0, "none"
+
+        relative_path = str(entry.get("relative_path", ""))
+        title = str(entry.get("title", ""))
+        path_obj = Path(relative_path)
+        filename = path_obj.stem
+        path_without_suffix = str(path_obj.with_suffix(""))
+
+        query_norm = self._normalized_lookup_text(query)
+        title_norm = self._normalized_lookup_text(title)
+        filename_norm = self._normalized_lookup_text(filename)
+        path_norm = self._normalized_lookup_text(relative_path)
+        path_no_suffix_norm = self._normalized_lookup_text(path_without_suffix)
+        title_path_norm = " ".join(part for part in [title_norm, filename_norm, path_norm] if part)
+
+        if query_norm and query_norm == title_norm:
+            return 100.0, "exact_title"
+        if query_norm and query_norm == filename_norm:
+            return 98.0, "exact_filename"
+        if query_norm and query_norm in {path_norm, path_no_suffix_norm}:
+            return 96.0, "exact_path"
+        if query_norm and (path_norm.endswith(query_norm) or path_no_suffix_norm.endswith(query_norm)):
+            return 88.0, "path_suffix"
+
+        title_terms = set(self._ordered_search_terms(title))
+        filename_terms = set(self._ordered_search_terms(filename))
+        path_terms = set(self._ordered_search_terms(relative_path))
+        title_path_terms = title_terms | filename_terms | path_terms
+        matched = terms & title_path_terms
+        if not matched:
+            return 0.0, "none"
+
+        coverage = len(matched) / len(terms)
+        if title_terms and terms.issubset(title_terms):
+            return 80.0 + coverage, "title_terms"
+        if filename_terms and terms.issubset(filename_terms):
+            return 78.0 + coverage, "filename_terms"
+        if terms.issubset(path_terms):
+            return 72.0 + coverage, "path_terms"
+
+        query_bigrams = {" ".join(pair) for pair in zip(ordered_terms, ordered_terms[1:])}
+        title_path_ordered = self._ordered_search_terms(title_path_norm)
+        title_path_bigrams = {" ".join(pair) for pair in zip(title_path_ordered, title_path_ordered[1:])}
+        bigram_bonus = len(query_bigrams & title_path_bigrams) / len(query_bigrams) if query_bigrams else 0.0
+        return (40.0 * coverage) + (10.0 * bigram_bonus), "partial"
+
+    def _note_lookup_result(self, entry: dict[str, Any], score: float, match_type: str) -> dict[str, Any]:
+        return {
+            "score": score,
+            "match_type": match_type,
+            "vault": str(entry.get("vault", "")),
+            "relative_path": str(entry.get("relative_path", "")),
+            "title": str(entry.get("title", "")),
+            "chunk_count": int(entry.get("chunk_count", 0)),
+            "chunk_ids": list(entry.get("chunk_ids", [])),
+            "document": dict(entry),
+        }
+
+    def find_notes(self, query: str, limit: int = 5, vault: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            files = self._manifest.get("files", {})
+            scored: list[tuple[float, str, str, dict[str, Any], str]] = []
+            for key, entry in files.items():
+                if vault and entry.get("vault") != vault:
+                    continue
+                score, match_type = self._note_match_score(query, entry)
+                if score <= 0:
+                    continue
+                scored.append((score, str(entry.get("vault", "")), str(entry.get("relative_path", key)), entry, match_type))
+            scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+            results = [
+                self._note_lookup_result(entry, score, match_type)
+                for score, _, _, entry, match_type in scored[: max(0, limit)]
+            ]
+            return {"query": query, "limit": limit, "vault": vault, "results": results}
+
     def _keyword_boost(self, query: str, payload: dict[str, Any]) -> float:
         ordered_terms = self._ordered_search_terms(query)
         terms = set(ordered_terms)
@@ -849,6 +932,19 @@ def build_mcp_server(service: VaultMemoryService | None = None) -> FastMCP:
     @mcp.tool(name="get")
     def get(path: str | None = None, chunk_id: str | None = None, vault: str | None = None) -> dict[str, Any]:
         return get_note_context(path=path, chunk_id=chunk_id, vault=vault)
+
+    @mcp.tool(name="find_notes")
+    def find_notes(query: str, limit: int = 5, vault: str | None = None) -> dict[str, Any]:
+        """Find notes by exact/fuzzy title or path without vector search."""
+        return service.find_notes(query=query, limit=limit, vault=vault)
+
+    @mcp.tool(name="find_note")
+    def find_note(query: str, limit: int = 5, vault: str | None = None) -> dict[str, Any]:
+        return find_notes(query=query, limit=limit, vault=vault)
+
+    @mcp.tool(name="find")
+    def find(query: str, limit: int = 5, vault: str | None = None) -> dict[str, Any]:
+        return find_notes(query=query, limit=limit, vault=vault)
 
     @mcp.tool(name="memory_status")
     def memory_status() -> dict[str, Any]:

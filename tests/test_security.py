@@ -36,6 +36,9 @@ class DummyService:
     def get(self, **kwargs):
         return {"get": kwargs}
 
+    def find_notes(self, **kwargs):
+        return {"find_notes": kwargs}
+
     def status(self):
         return {"ok": True, "sync_state": self._sync_state, "files_indexed": 1, "last_sync": "now"}
 
@@ -70,7 +73,7 @@ class McpToolSecurityTests(unittest.TestCase):
 
         self.assertEqual(
             set(mcp.tools),
-            {"search_vault", "search", "get_note_context", "get", "memory_status", "status"},
+            {"search_vault", "search", "get_note_context", "get", "find_notes", "find_note", "find", "memory_status", "status"},
         )
 
     def test_mutation_tools_are_registered_when_enabled(self) -> None:
@@ -83,6 +86,8 @@ class McpToolSecurityTests(unittest.TestCase):
         self.assertIn("rebuild", mcp.tools)
         self.assertIn("search", mcp.tools)
         self.assertIn("get", mcp.tools)
+        self.assertIn("find_note", mcp.tools)
+        self.assertIn("find", mcp.tools)
         self.assertIn("status", mcp.tools)
 
 
